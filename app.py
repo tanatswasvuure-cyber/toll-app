@@ -11,10 +11,11 @@ app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'toll_system_secret_key_2025')
 
 # ================= DATABASE CONFIGURATION =================
-DB_HOST = os.environ.get('DB_HOST', '34071')
-DB_USER = os.environ.get('DB_USER', 'root')
-DB_PASSWORD = os.environ.get('DB_PASSWORD',)
-DB_NAME = os.environ.get('DB_NAME', 'toll_system')
+DB_HOST = os.environ.get('tramway.proxy.rlwy.net' )
+DB_USER = os.environ.get('root')
+DB_PASSWORD = os.environ.get('cKaprRglMnaUsGsCrTwpHGWikGusOsoz',)
+DB_NAME = os.environ.get('railway')
+DB_PORT =34071
 
 TOLL_AMOUNT = float(os.environ.get('TOLL_AMOUNT', '1.50'))
 
