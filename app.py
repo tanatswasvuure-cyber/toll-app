@@ -775,4 +775,4 @@ if __name__ == "__main__":
     print("💰 Toll Amount: $1.50 USD")
     print("="*60)
     print("\n🚨 AUTOMATIC POLICE ALERT SYSTEM ACTIVE!")
-    print("   • Stolen vehicle
+    print("   • Stolen vehicle")
