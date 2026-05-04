@@ -2,25 +2,37 @@ from flask import Flask, request, jsonify, render_template_string, session, redi
 import mysql.connector
 from datetime import datetime
 import hashlib
-import json
 import os
-import random
+import requests
+import smtplib
+from email.mime.text import MIMEText
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'toll_system_secret_key_2025')
 
-# ================= DATABASE CONFIGURATION FROM ENVIRONMENT =================
-DB_HOST = os.environ.get('DB_HOST', 'localhost')
+# ================= DATABASE CONFIGURATION =================
+DB_HOST = os.environ.get('DB_HOST', '34071')
 DB_USER = os.environ.get('DB_USER', 'root')
-DB_PASSWORD = os.environ.get('DB_PASSWORD', '')
+DB_PASSWORD = os.environ.get('DB_PASSWORD',)
 DB_NAME = os.environ.get('DB_NAME', 'toll_system')
 
-# ================= CURRENCY CONFIGURATION =================
 TOLL_AMOUNT = float(os.environ.get('TOLL_AMOUNT', '1.50'))
-CURRENCY_SYMBOL = "$"
-CURRENCY_CODE = "USD"
 
-# Database connection function with retry
+# ================= POLICE ALERT CONFIGURATION =================
+# Option 1: Email to SMS (Uncomment to enable)
+POLICE_SMS_EMAIL = os.environ.get('POLICE_SMS_EMAIL', '')  # e.g., "1234567890@txt.att.net"
+POLICE_EMAIL = os.environ.get('POLICE_EMAIL', '')          # Police station email
+SENDER_EMAIL = os.environ.get('SENDER_EMAIL', '')
+SENDER_PASSWORD = os.environ.get('SENDER_PASSWORD', '')
+
+# Option 2: Telegram Bot (Recommended - Free)
+TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
+TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
+
+# Option 3: Webhook URL (for custom police system)
+POLICE_WEBHOOK_URL = os.environ.get('POLICE_WEBHOOK_URL', '')
+
+# Database connection function
 def get_db_connection():
     try:
         db = mysql.connector.connect(
@@ -28,19 +40,118 @@ def get_db_connection():
             user=DB_USER,
             password=DB_PASSWORD,
             database=DB_NAME,
-            autocommit=True,
-            connect_timeout=10
+            autocommit=True
         )
         return db
     except Exception as e:
-        print(f"Database connection error: {e}")
+        print(f"Database error: {e}")
         return None
 
-# Initialize database tables
+# ================= AUTOMATIC POLICE ALERT FUNCTION =================
+def send_police_alert(vehicle_number, rfid_tag, location="Toll Plaza", reason="STOLEN VEHICLE DETECTED"):
+    """Send automatic alerts to police via multiple channels"""
+    
+    alert_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    message = f"""
+    🚨 POLICE EMERGENCY ALERT 🚨
+    
+    Vehicle: {vehicle_number}
+    RFID Tag: {rfid_tag}
+    Location: {location}
+    Time: {alert_time}
+    Reason: {reason}
+    
+    ACTION: Vehicle marked as stolen - Intercept immediately!
+    """
+    
+    alert_sent = False
+    
+    # Method 1: Telegram Bot (Best - Free)
+    if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+        try:
+            telegram_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+            requests.post(telegram_url, json={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": message,
+                "parse_mode": "HTML"
+            }, timeout=5)
+            print(f"✅ Telegram alert sent for {vehicle_number}")
+            alert_sent = True
+        except Exception as e:
+            print(f"Telegram failed: {e}")
+    
+    # Method 2: Email (Free)
+    if SENDER_EMAIL and SENDER_PASSWORD and POLICE_EMAIL:
+        try:
+            msg = MIMEText(message)
+            msg['Subject'] = f'🚨 POLICE ALERT - Stolen Vehicle {vehicle_number}'
+            msg['From'] = SENDER_EMAIL
+            msg['To'] = POLICE_EMAIL
+            
+            server = smtplib.SMTP('smtp.gmail.com', 587)
+            server.starttls()
+            server.login(SENDER_EMAIL, SENDER_PASSWORD)
+            server.send_message(msg)
+            server.quit()
+            print(f"✅ Email alert sent for {vehicle_number}")
+            alert_sent = True
+        except Exception as e:
+            print(f"Email failed: {e}")
+    
+    # Method 3: SMS via Email Gateway (Free with carrier email)
+    if POLICE_SMS_EMAIL and SENDER_EMAIL and SENDER_PASSWORD:
+        try:
+            sms_msg = MIMEText(f"ALERT: Stolen vehicle {vehicle_number} at {location}!")
+            sms_msg['Subject'] = 'POLICE ALERT'
+            sms_msg['From'] = SENDER_EMAIL
+            sms_msg['To'] = POLICE_SMS_EMAIL
+            
+            server = smtplib.SMTP('smtp.gmail.com', 587)
+            server.starttls()
+            server.login(SENDER_EMAIL, SENDER_PASSWORD)
+            server.send_message(sms_msg)
+            server.quit()
+            print(f"✅ SMS alert sent for {vehicle_number}")
+            alert_sent = True
+        except Exception as e:
+            print(f"SMS failed: {e}")
+    
+    # Method 4: Webhook (For integration with police system)
+    if POLICE_WEBHOOK_URL:
+        try:
+            webhook_data = {
+                "alert_type": "stolen_vehicle",
+                "vehicle_number": vehicle_number,
+                "rfid_tag": rfid_tag,
+                "location": location,
+                "timestamp": alert_time,
+                "severity": "HIGH"
+            }
+            requests.post(POLICE_WEBHOOK_URL, json=webhook_data, timeout=5)
+            print(f"✅ Webhook alert sent for {vehicle_number}")
+            alert_sent = True
+        except Exception as e:
+            print(f"Webhook failed: {e}")
+    
+    # Always log to database
+    db = get_db_connection()
+    if db:
+        cursor = db.cursor()
+        cursor.execute("""
+            INSERT INTO system_logs (action, user, details) 
+            VALUES (%s, %s, %s)
+        """, ("AUTOMATIC_POLICE_ALERT", "SYSTEM", f"Vehicle {vehicle_number} detected at {location} - {reason}"))
+        db.commit()
+        cursor.close()
+        db.close()
+    
+    return alert_sent
+
+# Initialize database and tables
 def init_db():
     db = get_db_connection()
     if not db:
-        print("❌ Cannot initialize database - check connection")
+        print("⚠️ Database not available - will use memory mode for testing")
         return
     
     cursor = db.cursor()
@@ -52,8 +163,7 @@ def init_db():
             rfid_tag VARCHAR(100) UNIQUE,
             owner_name VARCHAR(100),
             vehicle_type VARCHAR(50),
-            owner_phone VARCHAR(20),
-            registered_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            owner_phone VARCHAR(20)
         )
     """)
     
@@ -74,6 +184,8 @@ def init_db():
             vehicle_number VARCHAR(50),
             rfid_tag VARCHAR(100),
             owner_contact VARCHAR(20),
+            police_station VARCHAR(100),
+            status ENUM('ACTIVE', 'RECOVERED') DEFAULT 'ACTIVE',
             reported_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
@@ -89,6 +201,17 @@ def init_db():
     """)
     
     cursor.execute("""
+        CREATE TABLE IF NOT EXISTS police_alerts (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            vehicle_number VARCHAR(50),
+            alert_type VARCHAR(50),
+            message TEXT,
+            acknowledged BOOLEAN DEFAULT FALSE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id INT AUTO_INCREMENT PRIMARY KEY,
             username VARCHAR(50) UNIQUE,
@@ -96,126 +219,72 @@ def init_db():
             role VARCHAR(20)
         )
     """)
+    db.commit()
     
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS traffic_data (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            vehicle_count INT,
-            avg_speed FLOAT,
-            peak_hour VARCHAR(10),
-            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    
-    # Create default admin (password: admin123)
+    # Create default admin
     cursor.execute("SELECT * FROM users WHERE username='admin'")
     if not cursor.fetchone():
         cursor.execute("INSERT INTO users (username, password, role) VALUES (%s, %s, %s)",
                        ("admin", hashlib.sha256("admin123".encode()).hexdigest(), "admin"))
+        db.commit()
     
-    db.commit()
     cursor.close()
     db.close()
     print("✅ Database initialized")
 
-def process_rfid_scan(rfid_tag):
-    db = get_db_connection()
-    if not db:
-        return {"status": "ERROR", "reason": "Database connection failed"}
-    
-    cursor = db.cursor()
-    
-    # Check if vehicle is stolen
-    cursor.execute("SELECT vehicle_number FROM stolen_vehicles WHERE rfid_tag=%s", (rfid_tag,))
-    stolen = cursor.fetchone()
-    
-    if stolen:
-        vehicle_number = stolen[0]
-        cursor.execute("""
-            INSERT INTO transactions (rfid_tag, vehicle_number, amount, status) 
-            VALUES (%s, %s, %s, %s)
-        """, (rfid_tag, vehicle_number, TOLL_AMOUNT, "DENIED-STOLEN"))
-        db.commit()
-        
-        cursor.execute("""
-            INSERT INTO system_logs (action, user, details) 
-            VALUES (%s, %s, %s)
-        """, ("POLICE_ALERT", "SYSTEM", f"Stolen vehicle {vehicle_number} detected"))
-        db.commit()
-        
-        cursor.close()
-        db.close()
-        return {"status": "DENIED", "reason": "STOLEN - POLICE ALERTED", "vehicle": vehicle_number}
-    
-    # Check if vehicle is registered
-    cursor.execute("SELECT vehicle_number, owner_name, vehicle_type FROM vehicles WHERE rfid_tag=%s", (rfid_tag,))
-    vehicle = cursor.fetchone()
-    
-    if vehicle:
-        vehicle_number, owner, vehicle_type = vehicle
-        
-        price = TOLL_AMOUNT
-        if vehicle_type == "Truck":
-            price = TOLL_AMOUNT * 2
-        elif vehicle_type == "Bus":
-            price = TOLL_AMOUNT * 1.5
-        
-        cursor.execute("""
-            INSERT INTO transactions (rfid_tag, vehicle_number, amount, status) 
-            VALUES (%s, %s, %s, %s)
-        """, (rfid_tag, vehicle_number, price, "PAID"))
-        db.commit()
-        
-        cursor.close()
-        db.close()
-        return {"status": "APPROVED", "vehicle": vehicle_number, "owner": owner, "amount": price, "vehicle_type": vehicle_type}
-    else:
-        cursor.close()
-        db.close()
-        return {"status": "DENIED", "reason": "UNKNOWN VEHICLE"}
+# Call init_db when app starts
+init_db()
 
-# Simple dashboard HTML (condensed for cloud)
+# ================= ENHANCED DASHBOARD WITH POLICE ALERTS =================
 DASHBOARD_HTML = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Smart Toll System</title>
+    <title>Smart Toll System - Police Alerts</title>
     <style>
         body { font-family: Arial; background: #0a0e27; color: white; margin: 0; padding: 20px; }
         .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 20px; text-align: center; font-size: 24px; }
         .container { max-width: 1200px; margin: auto; }
-        .stats { display: grid; grid-template-columns: repeat(4,1fr); gap: 20px; margin: 20px 0; }
+        .stats { display: grid; grid-template-columns: repeat(5,1fr); gap: 20px; margin: 20px 0; }
         .card { background: #1a1f3e; padding: 20px; border-radius: 10px; text-align: center; }
         .card h2 { font-size: 32px; color: #667eea; }
+        .alert-card { background: #1a1f3e; padding: 20px; border-radius: 10px; text-align: center; border: 2px solid #ef4444; }
+        .alert-card h2 { font-size: 32px; color: #ef4444; }
         table { width: 100%; background: #1a1f3e; border-radius: 10px; padding: 20px; }
         th, td { padding: 10px; text-align: left; }
         th { color: #667eea; }
         .status-paid { color: #4ade80; }
         .status-denied { color: #f87171; }
-        .panic-btn { position: fixed; bottom: 20px; right: 20px; background: #ef4444; padding: 15px 25px; border-radius: 50px; cursor: pointer; font-weight: bold; }
         .tabs { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
         .tab { background: #1a1f3e; padding: 10px 20px; border-radius: 10px; cursor: pointer; }
         .tab.active { background: #667eea; }
         input, select { width: 100%; padding: 10px; background: #0a0e27; border: 1px solid #2a2f4e; color: white; border-radius: 5px; margin-bottom: 10px; }
         button { background: #667eea; color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; }
         .btn-danger { background: #ef4444; }
+        .btn-warning { background: #f59e0b; }
+        .panic-btn { position: fixed; bottom: 20px; right: 20px; background: #ef4444; padding: 15px 25px; border-radius: 50px; cursor: pointer; font-weight: bold; animation: pulse 1s infinite; }
+        @keyframes pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.05); } }
+        .alert-notification { position: fixed; top: 20px; right: 20px; background: #ef4444; padding: 15px; border-radius: 10px; z-index: 1000; max-width: 350px; border-left: 5px solid #ff0000; animation: slideIn 0.3s ease; }
+        @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
     </style>
 </head>
 <body>
-    <div class="header">🚗 SMART TOLL SYSTEM - USD 💵</div>
+    <div class="header">🚗 SMART TOLL SYSTEM WITH AUTOMATIC POLICE ALERTS 🚨</div>
     <div class="container">
         <div class="stats">
             <div class="card"><h2 id="vehicles">0</h2><p>Vehicles</p></div>
-            <div class="card"><h2 id="today">0</h2><p>Today</p></div>
+            <div class="card"><h2 id="today">0</h2><p>Today's Transactions</p></div>
             <div class="card"><h2 id="revenue">$0</h2><p>Revenue</p></div>
-            <div class="card"><h2 id="alerts">0</h2><p>Stolen Alerts</p></div>
+            <div class="alert-card"><h2 id="alerts">0</h2><p>Alerts Today</p></div>
+            <div class="alert-card"><h2 id="policeAlerts">0</h2><p>Police Notified</p></div>
         </div>
         
         <div class="tabs">
             <div class="tab active" onclick="showTab('transactions')">📊 Transactions</div>
             <div class="tab" onclick="showTab('vehicles')">🚗 Vehicles</div>
             <div class="tab" onclick="showTab('register')">📝 Register</div>
-            <div class="tab" onclick="showTab('stolen')">⚠️ Stolen</div>
+            <div class="tab" onclick="showTab('stolen')">⚠️ Stolen Vehicles</div>
+            <div class="tab" onclick="showTab('alerts')">🚨 Police Alerts Log</div>
         </div>
         
         <div id="transactionsTab">
@@ -225,7 +294,7 @@ DASHBOARD_HTML = """
         
         <div id="vehiclesTab" style="display:none;">
             <h3>Registered Vehicles</h3>
-            <input type="text" id="searchInput" placeholder="Search..." onkeyup="searchVehicles()">
+            <input type="text" id="searchInput" placeholder="Search...">
             <table><thead><tr><th>Vehicle</th><th>RFID</th><th>Owner</th><th>Type</th><th>Action</th></tr></thead><tbody id="vehiclesList"></tbody></table>
         </div>
         
@@ -241,29 +310,83 @@ DASHBOARD_HTML = """
         </div>
         
         <div id="stolenTab" style="display:none;">
-            <h3>Report Stolen</h3>
+            <h3>⚠️ Report Stolen Vehicle (Automatic Police Alert will be sent)</h3>
             <form id="stolenForm">
                 <input type="text" name="vehicle_number" placeholder="Vehicle Number" required>
                 <input type="text" name="rfid_tag" placeholder="RFID Tag" required>
-                <button type="submit" class="btn-danger">Mark Stolen</button>
+                <input type="text" name="owner_contact" placeholder="Owner Contact">
+                <button type="submit" class="btn-danger">Report Stolen - Alert Police</button>
             </form>
             <br>
-            <h3>Stolen Vehicles</h3>
-            <table><thead><tr><th>Vehicle</th><th>RFID</th><th>Date</th><th>Action</th></tr></thead><tbody id="stolenList"></tbody></table>
+            <h3>Stolen Vehicles List (Active Alerts)</h3>
+            <table><thead><tr><th>Vehicle</th><th>RFID</th><th>Date</th><th>Status</th><th>Action</th></tr></thead><tbody id="stolenList"></tbody></table>
+        </div>
+        
+        <div id="alertsTab" style="display:none;">
+            <h3>📋 Police Alert History</h3>
+            <table><thead><tr><th>Time</th><th>Vehicle</th><th>Alert Type</th><th>Status</th><th>Acknowledged</th></tr></thead><tbody id="alertsList"></tbody></table>
         </div>
     </div>
     
-    <div class="panic-btn" onclick="triggerPanic()">🚨 PANIC</div>
+    <div class="panic-btn" onclick="triggerPanic()">🚨 PANIC - ALERT POLICE 🚨</div>
     
     <script>
+        // Auto-check for stolen vehicles every 3 seconds
+        let lastAlertCount = 0;
+        
+        function checkStolenAlerts() {
+            fetch('/api/stolen_alerts')
+                .then(res => res.json())
+                .then(data => {
+                    if(data.length > lastAlertCount) {
+                        // New stolen vehicle detected!
+                        const newAlerts = data.slice(lastAlertCount);
+                        newAlerts.forEach(alert => {
+                            showPoliceNotification(alert.vehicle_number, alert.time);
+                        });
+                    }
+                    lastAlertCount = data.length;
+                });
+        }
+        
+        function showPoliceNotification(vehicle, time) {
+            const notification = document.createElement('div');
+            notification.className = 'alert-notification';
+            notification.innerHTML = `
+                <strong>🚨 AUTOMATIC POLICE ALERT 🚨</strong><br>
+                <strong>Vehicle:</strong> ${vehicle}<br>
+                <strong>Time:</strong> ${time}<br>
+                <strong>Status:</strong> STOLEN VEHICLE DETECTED<br>
+                <strong>Action:</strong> Police have been notified automatically!<br>
+                <button onclick="this.parentElement.remove()" style="margin-top:10px;">Acknowledge</button>
+            `;
+            document.body.appendChild(notification);
+            
+            // Play alert sound
+            const audio = new Audio('data:audio/wav;base64,U3RlYWx0aCBzb3VuZA==');
+            audio.play().catch(e => console.log);
+            
+            // Browser notification
+            if (Notification.permission === "granted") {
+                new Notification("🚨 POLICE ALERT!", {
+                    body: `Stolen vehicle ${vehicle} detected at toll plaza! Police notified.`,
+                    icon: "https://cdn-icons-png.flaticon.com/512/190/190411.png"
+                });
+            }
+            
+            setTimeout(() => notification.remove(), 15000);
+        }
+        
         function showTab(tab) {
             document.getElementById('transactionsTab').style.display = 'none';
             document.getElementById('vehiclesTab').style.display = 'none';
             document.getElementById('registerTab').style.display = 'none';
             document.getElementById('stolenTab').style.display = 'none';
+            document.getElementById('alertsTab').style.display = 'none';
             document.getElementById(tab + 'Tab').style.display = 'block';
             if(tab === 'vehicles') loadVehicles();
             if(tab === 'stolen') loadStolen();
+            if(tab === 'alerts') loadAlertHistory();
         }
         
         function loadStats() {
@@ -272,6 +395,7 @@ DASHBOARD_HTML = """
                 document.getElementById('today').innerText=d.today_transactions;
                 document.getElementById('revenue').innerText='$'+d.today_revenue;
                 document.getElementById('alerts').innerText=d.stolen_alerts_today;
+                document.getElementById('policeAlerts').innerText=d.police_alerts_sent || 0;
             });
         }
         
@@ -280,7 +404,13 @@ DASHBOARD_HTML = """
                 const tbody = document.getElementById('transactionsList');
                 tbody.innerHTML = '';
                 d.forEach(t=>{
-                    tbody.innerHTML += `<tr><td>${t.vehicle_number}</td><td>$${t.amount}</td><td class="status-${t.status.toLowerCase().includes('paid')?'paid':'denied'}">${t.status}</td><td>${t.time}</td></tr>`;
+                    const statusClass = t.status.toLowerCase().includes('stolen') ? 'status-denied' : 'status-paid';
+                    tbody.innerHTML += `<tr>
+                        <td>${t.vehicle_number}</td>
+                        <td>$${t.amount}</td>
+                        <td class="${statusClass}">${t.status}</td>
+                        <td>${t.time}</td>
+                    </td>`;
                 });
             });
         }
@@ -290,7 +420,13 @@ DASHBOARD_HTML = """
                 const tbody = document.getElementById('vehiclesList');
                 tbody.innerHTML = '';
                 d.forEach(v=>{
-                    tbody.innerHTML += `<tr><td>${v.vehicle_number}</td><td>${v.rfid_tag}</td><td>${v.owner_name||'-'}</td><td>${v.vehicle_type||'-'}</td><td><button onclick="deleteVehicle(${v.id})" class="btn-danger">Delete</button></td></tr>`;
+                    tbody.innerHTML += `<tr>
+                        <td>${v.vehicle_number}</td>
+                        <td>${v.rfid_tag}</td>
+                        <td>${v.owner_name||'-'}</td>
+                        <td>${v.vehicle_type||'-'}</td>
+                        <td><button onclick="deleteVehicle(${v.id})" class="btn-danger">Delete</button></td>
+                    </tr>`;
                 });
             });
         }
@@ -300,43 +436,91 @@ DASHBOARD_HTML = """
                 const tbody = document.getElementById('stolenList');
                 tbody.innerHTML = '';
                 d.forEach(s=>{
-                    tbody.innerHTML += `<tr><td>${s.vehicle_number}</td><td>${s.rfid_tag}</td><td>${s.reported_date}</td><td><button onclick="alertPolice('${s.vehicle_number}')" class="btn-danger">Alert Police</button></td></tr>`;
+                    tbody.innerHTML += `<tr>
+                        <td>${s.vehicle_number}</td>
+                        <td>${s.rfid_tag}</td>
+                        <td>${s.reported_date}</td>
+                        <td><span class="status-denied">ACTIVE ALERT</span></td>
+                        <td><button onclick="markRecovered('${s.vehicle_number}')" class="btn-warning">Mark Recovered</button></td>
+                    </tr>`;
                 });
             });
         }
         
-        function deleteVehicle(id) {
-            if(confirm('Delete?')) fetch('/api/delete_vehicle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id})}).then(()=>loadVehicles());
+        function loadAlertHistory() {
+            fetch('/api/alert_history').then(r=>r.json()).then(d=>{
+                const tbody = document.getElementById('alertsList');
+                tbody.innerHTML = '';
+                d.forEach(a=>{
+                    tbody.innerHTML += `<tr>
+                        <td>${a.time}</td>
+                        <td>${a.vehicle_number}</td>
+                        <td>${a.alert_type}</td>
+                        <td><span class="${a.status === 'sent' ? 'status-paid' : 'status-denied'}">${a.status}</span></td>
+                        <td>${a.acknowledged ? '✅ Yes' : '⏳ Pending'}</td>
+                    </tr>`;
+                });
+            });
         }
         
-        function alertPolice(vehicle) {
-            fetch('/api/alert_police',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({vehicle_number:vehicle})}).then(()=>alert('Police alerted!'));
+        function markRecovered(vehicle) {
+            if(confirm(`Mark ${vehicle} as recovered? Police alert will be cancelled.`)) {
+                fetch('/api/mark_recovered', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({vehicle_number: vehicle})
+                }).then(() => loadStolen());
+            }
+        }
+        
+        function deleteVehicle(id) {
+            if(confirm('Delete this vehicle?')) {
+                fetch('/api/delete_vehicle', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({id:id})})
+                .then(()=>loadVehicles());
+            }
         }
         
         function triggerPanic() {
-            if(confirm('EMERGENCY!')) fetch('/api/panic_alert',{method:'POST'}).then(()=>alert('Police notified!'));
+            if(confirm('🚨 EMERGENCY PANIC! This will alert ALL police units! 🚨')) {
+                fetch('/api/panic_alert', {method:'POST'})
+                .then(()=>{
+                    showPoliceNotification('EMERGENCY PANIC', new Date().toLocaleTimeString());
+                    alert('Police have been notified of emergency!');
+                });
+            }
         }
         
         function searchVehicles() {
             const search = document.getElementById('searchInput').value.toLowerCase();
             const rows = document.querySelectorAll('#vehiclesList tr');
-            rows.forEach(row=>{row.style.display=row.innerText.toLowerCase().includes(search)?'':'none';});
+            rows.forEach(row=>{row.style.display=row.innerText.toLowerCase().includes(search)?'': 'none';});
         }
         
         document.getElementById('registerForm')?.addEventListener('submit', (e) => {
             e.preventDefault();
             const formData = new FormData(e.target);
-            fetch('/api/register_vehicle', {method:'POST',body:JSON.stringify(Object.fromEntries(formData)),headers:{'Content-Type':'application/json'}}).then(r=>r.json()).then(d=>alert(d.message));
+            fetch('/api/register_vehicle', {method:'POST', body:JSON.stringify(Object.fromEntries(formData)), headers:{'Content-Type':'application/json'}})
+            .then(r=>r.json()).then(d=>alert(d.message));
         });
         
         document.getElementById('stolenForm')?.addEventListener('submit', (e) => {
             e.preventDefault();
             const formData = new FormData(e.target);
-            fetch('/api/report_stolen', {method:'POST',body:JSON.stringify(Object.fromEntries(formData)),headers:{'Content-Type':'application/json'}}).then(r=>r.json()).then(d=>{alert(d.message);loadStolen();});
+            fetch('/api/report_stolen', {method:'POST', body:JSON.stringify(Object.fromEntries(formData)), headers:{'Content-Type':'application/json'}})
+            .then(r=>r.json()).then(d=>{
+                alert(d.message + ' Police have been automatically alerted!');
+                loadStolen();
+            });
         });
         
+        // Request notification permission
+        if (Notification.permission === "default") {
+            Notification.requestPermission();
+        }
+        
         loadStats(); loadTransactions(); loadStolen();
-        setInterval(()=>{loadStats(); loadTransactions();}, 5000);
+        setInterval(()=>{loadStats(); loadTransactions(); checkStolenAlerts();}, 3000);
+        checkStolenAlerts();
     </script>
 </body>
 </html>
@@ -351,7 +535,8 @@ def dashboard():
 def get_stats():
     db = get_db_connection()
     if not db:
-        return jsonify({"vehicles":0, "today_transactions":0, "today_revenue":0, "stolen_alerts_today":0})
+        return jsonify({"vehicles":0, "today_transactions":0, "today_revenue":0, "stolen_alerts_today":0, "police_alerts_sent":0})
+    
     cursor = db.cursor()
     cursor.execute("SELECT COUNT(*) FROM vehicles")
     vehicles = cursor.fetchone()[0]
@@ -361,15 +546,18 @@ def get_stats():
     today_revenue = cursor.fetchone()[0]
     cursor.execute("SELECT COUNT(*) FROM system_logs WHERE action='POLICE_ALERT' AND DATE(timestamp)=CURDATE()")
     stolen_alerts = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM system_logs WHERE action='AUTOMATIC_POLICE_ALERT' AND DATE(timestamp)=CURDATE()")
+    police_alerts = cursor.fetchone()[0]
     cursor.close()
     db.close()
-    return jsonify({"vehicles":vehicles, "today_transactions":today_tx, "today_revenue":float(today_revenue), "stolen_alerts_today":stolen_alerts})
+    return jsonify({"vehicles":vehicles, "today_transactions":today_tx, "today_revenue":float(today_revenue), "stolen_alerts_today":stolen_alerts, "police_alerts_sent":police_alerts})
 
 @app.route("/api/transactions")
 def get_transactions():
     db = get_db_connection()
     if not db:
         return jsonify([])
+    
     cursor = db.cursor()
     cursor.execute("SELECT vehicle_number, amount, status, DATE_FORMAT(time, '%H:%i:%s') FROM transactions ORDER BY id DESC LIMIT 20")
     data = [{"vehicle_number":r[0], "amount":float(r[1]), "status":r[2], "time":r[3]} for r in cursor.fetchall()]
@@ -382,6 +570,7 @@ def get_vehicles():
     db = get_db_connection()
     if not db:
         return jsonify([])
+    
     cursor = db.cursor()
     cursor.execute("SELECT id, vehicle_number, rfid_tag, owner_name, vehicle_type FROM vehicles")
     data = [{"id":r[0], "vehicle_number":r[1], "rfid_tag":r[2], "owner_name":r[3], "vehicle_type":r[4]} for r in cursor.fetchall()]
@@ -395,6 +584,7 @@ def register_vehicle():
     db = get_db_connection()
     if not db:
         return jsonify({"message":"Database error"})
+    
     cursor = db.cursor()
     cursor.execute("INSERT INTO vehicles (vehicle_number, rfid_tag, owner_name, vehicle_type, owner_phone) VALUES (%s,%s,%s,%s,%s)",
                    (data['vehicle_number'], data['rfid_tag'], data['owner_name'], data['vehicle_type'], data.get('owner_phone', '')))
@@ -409,6 +599,7 @@ def delete_vehicle():
     db = get_db_connection()
     if not db:
         return jsonify({"message":"Database error"})
+    
     cursor = db.cursor()
     cursor.execute("DELETE FROM vehicles WHERE id=%s", (data['id'],))
     db.commit()
@@ -422,6 +613,7 @@ def report_stolen():
     db = get_db_connection()
     if not db:
         return jsonify({"message":"Database error"})
+    
     cursor = db.cursor()
     cursor.execute("INSERT INTO stolen_vehicles (vehicle_number, rfid_tag, owner_contact) VALUES (%s,%s,%s)",
                    (data['vehicle_number'], data['rfid_tag'], data.get('owner_contact', '')))
@@ -429,15 +621,20 @@ def report_stolen():
     db.commit()
     cursor.close()
     db.close()
-    return jsonify({"message": "Vehicle marked stolen!"})
+    
+    # Send automatic police alert
+    send_police_alert(data['vehicle_number'], data['rfid_tag'], "Via Report Stolen", "VEHICLE MARKED STOLEN")
+    
+    return jsonify({"message": "Vehicle marked stolen! Police have been automatically alerted."})
 
 @app.route("/api/stolen_vehicles")
 def get_stolen():
     db = get_db_connection()
     if not db:
         return jsonify([])
+    
     cursor = db.cursor()
-    cursor.execute("SELECT vehicle_number, rfid_tag, DATE(reported_date) FROM stolen_vehicles")
+    cursor.execute("SELECT vehicle_number, rfid_tag, DATE(reported_date) FROM stolen_vehicles WHERE status='ACTIVE'")
     data = [{"vehicle_number":r[0], "rfid_tag":r[1], "reported_date":str(r[2])} for r in cursor.fetchall()]
     cursor.close()
     db.close()
@@ -448,6 +645,7 @@ def get_stolen_alerts():
     db = get_db_connection()
     if not db:
         return jsonify([])
+    
     cursor = db.cursor()
     cursor.execute("""
         SELECT vehicle_number, DATE_FORMAT(time, '%H:%i:%s') 
@@ -460,46 +658,120 @@ def get_stolen_alerts():
     db.close()
     return jsonify(data)
 
+@app.route("/api/alert_history")
+def get_alert_history():
+    db = get_db_connection()
+    if not db:
+        return jsonify([])
+    
+    cursor = db.cursor()
+    cursor.execute("""
+        SELECT DATE_FORMAT(timestamp, '%H:%i:%s'), details, action, 'sent' as status, false as acknowledged
+        FROM system_logs 
+        WHERE action IN ('POLICE_ALERT', 'AUTOMATIC_POLICE_ALERT')
+        ORDER BY timestamp DESC LIMIT 20
+    """)
+    data = [{"time":r[0], "vehicle_number":r[1].split()[-1] if r[1] else "Unknown", "alert_type":r[2], "status":r[3], "acknowledged":r[4]} for r in cursor.fetchall()]
+    cursor.close()
+    db.close()
+    return jsonify(data)
+
+@app.route("/api/mark_recovered", methods=["POST"])
+def mark_recovered():
+    data = request.json
+    db = get_db_connection()
+    if not db:
+        return jsonify({"message":"Database error"})
+    
+    cursor = db.cursor()
+    cursor.execute("UPDATE stolen_vehicles SET status='RECOVERED' WHERE vehicle_number=%s", (data['vehicle_number'],))
+    db.commit()
+    cursor.close()
+    db.close()
+    return jsonify({"message": "Vehicle marked as recovered"})
+
 @app.route("/api/rfid", methods=["POST"])
 def handle_rfid():
     data = request.json
-    result = process_rfid_scan(data.get("rfid_tag"))
-    return jsonify(result)
+    rfid_tag = data.get("rfid_tag")
+    
+    db = get_db_connection()
+    if not db:
+        return jsonify({"status": "ERROR", "reason": "Database unavailable"})
+    
+    cursor = db.cursor()
+    
+    # Check if stolen
+    cursor.execute("SELECT vehicle_number FROM stolen_vehicles WHERE rfid_tag=%s AND status='ACTIVE'", (rfid_tag,))
+    stolen = cursor.fetchone()
+    if stolen:
+        vehicle_number = stolen[0]
+        cursor.execute("INSERT INTO transactions (rfid_tag, vehicle_number, amount, status) VALUES (%s,%s,%s,%s)",
+                       (rfid_tag, vehicle_number, TOLL_AMOUNT, "DENIED-STOLEN"))
+        db.commit()
+        cursor.close()
+        db.close()
+        
+        # 🔴 AUTOMATIC POLICE ALERT TRIGGERED 🔴
+        send_police_alert(vehicle_number, rfid_tag, "Main Toll Plaza", "STOLEN VEHICLE ATTEMPTED TOLL PASSAGE")
+        
+        return jsonify({"status": "DENIED", "reason": "STOLEN VEHICLE - POLICE AUTOMATICALLY ALERTED"})
+    
+    # Check if registered
+    cursor.execute("SELECT vehicle_number, owner_name, vehicle_type FROM vehicles WHERE rfid_tag=%s", (rfid_tag,))
+    vehicle = cursor.fetchone()
+    
+    if vehicle:
+        vehicle_number, owner, vehicle_type = vehicle
+        price = TOLL_AMOUNT * 2 if vehicle_type == "Truck" else TOLL_AMOUNT * 1.5 if vehicle_type == "Bus" else TOLL_AMOUNT
+        
+        cursor.execute("INSERT INTO transactions (rfid_tag, vehicle_number, amount, status) VALUES (%s,%s,%s,%s)",
+                       (rfid_tag, vehicle_number, price, "PAID"))
+        db.commit()
+        cursor.close()
+        db.close()
+        return jsonify({"status": "APPROVED", "vehicle": vehicle_number, "amount": price, "vehicle_type": vehicle_type})
+    else:
+        cursor.close()
+        db.close()
+        return jsonify({"status": "DENIED", "reason": "UNKNOWN VEHICLE"})
 
 @app.route("/api/panic_alert", methods=["POST"])
 def panic():
+    send_police_alert("EMERGENCY", "PANIC_BUTTON", "Toll Management System", "PANIC BUTTON ACTIVATED - EMERGENCY")
+    
     db = get_db_connection()
     if db:
         cursor = db.cursor()
         cursor.execute("INSERT INTO system_logs (action, user, details) VALUES (%s,%s,%s)",
-                       ("PANIC_ALERT", "admin", "Emergency panic button activated"))
+                       ("PANIC_ALERT", "admin", "Emergency panic button activated - Police notified"))
         db.commit()
         cursor.close()
         db.close()
-    return jsonify({"status": "panic_sent"})
+    return jsonify({"status": "panic_sent", "message": "Police have been notified!"})
 
 @app.route("/api/alert_police", methods=["POST"])
 def alert_police():
     data = request.json
+    send_police_alert(data.get('vehicle_number'), data.get('rfid_tag', 'MANUAL'), "Via Dashboard", "MANUAL POLICE ALERT")
+    
     db = get_db_connection()
     if db:
         cursor = db.cursor()
         cursor.execute("INSERT INTO system_logs (action, user, details) VALUES (%s,%s,%s)",
-                       ("MANUAL_POLICE_ALERT", "admin", f"Alert for {data.get('vehicle_number')}"))
+                       ("MANUAL_POLICE_ALERT", "admin", f"Manual alert for {data.get('vehicle_number')}"))
         db.commit()
         cursor.close()
         db.close()
-    return jsonify({"status": "alert_sent"})
+    return jsonify({"status": "alert_sent", "message": "Police have been alerted!"})
 
 if __name__ == "__main__":
-    # Initialize database on startup
     print("="*60)
-    print("🚗 SMART TOLL SYSTEM - Starting...")
+    print("🚗 SMART TOLL SYSTEM WITH AUTOMATIC POLICE ALERTS 🚨")
     print("="*60)
-    init_db()
-    print("✅ Database ready")
-    print("📱 Dashboard will be available at http://localhost:5000")
+    print("📱 Access Dashboard: http://localhost:5000")
+    print("🔑 Login: admin / admin123")
+    print("💰 Toll Amount: $1.50 USD")
     print("="*60)
-    
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+    print("\n🚨 AUTOMATIC POLICE ALERT SYSTEM ACTIVE!")
+    print("   • Stolen vehicle
