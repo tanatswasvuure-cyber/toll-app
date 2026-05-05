@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify, render_template_string, session, redirect, url_for
-import mysql.connector
+import psycopg2
+from psycopg2.extras import RealDictCursor
 from datetime import datetime
 import hashlib
 import os
@@ -10,40 +11,42 @@ from email.mime.text import MIMEText
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'toll_system_secret_key_2025')
 
-DB_HOST = os.environ.get('DB_HOST')
-DB_USER = os.environ.get('DB_USER')
-DB_PASSWORD = os.environ.get('DB_PASSWORD')
-DB_NAME = os.environ.get('DB_NAME')
+# ================= SUPABASE (POSTGRESQL) CONFIGURATION =================
+SUPABASE_HOST = os.environ.get('SUPABASE_HOST')
+SUPABASE_PORT = os.environ.get('SUPABASE_PORT', '5432')
+SUPABASE_USER = os.environ.get('SUPABASE_USER')
+SUPABASE_PASSWORD = os.environ.get('SUPABASE_PASSWORD')
+SUPABASE_DB = os.environ.get('SUPABASE_DB', 'postgres')
 
 TOLL_AMOUNT = float(os.environ.get('TOLL_AMOUNT', '1.50'))
 
 # ================= POLICE ALERT CONFIGURATION =================
-# Option 1: Email to SMS (Uncomment to enable)
-POLICE_SMS_EMAIL = os.environ.get('POLICE_SMS_EMAIL', '')  # e.g., "1234567890@txt.att.net"
-POLICE_EMAIL = os.environ.get('POLICE_EMAIL', '')          # Police station email
+POLICE_SMS_EMAIL = os.environ.get('POLICE_SMS_EMAIL', '')
+POLICE_EMAIL = os.environ.get('POLICE_EMAIL', '')
 SENDER_EMAIL = os.environ.get('SENDER_EMAIL', '')
 SENDER_PASSWORD = os.environ.get('SENDER_PASSWORD', '')
-
-# Option 2: Telegram Bot (Recommended - Free)
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
-
-# Option 3: Webhook URL (for custom police system)
 POLICE_WEBHOOK_URL = os.environ.get('POLICE_WEBHOOK_URL', '')
 
-# Database connection function
+# ================= DATABASE CONNECTION FUNCTION =================
 def get_db_connection():
+    """Connect to Supabase (PostgreSQL) database"""
     try:
-        db = mysql.connector.connect(
-            host=DB_HOST,
-            user=DB_USER,
-            password=DB_PASSWORD,
-            database=DB_NAME,
-            port=int(os.environ.get('DB_PORT', 3306)),  # ← ADD THIS LINE
-            autocommit=True
+        if not all([SUPABASE_HOST, SUPABASE_USER, SUPABASE_PASSWORD]):
+            print("⚠️ Missing Supabase environment variables")
+            return None
+        
+        conn = psycopg2.connect(
+            host=SUPABASE_HOST,
+            port=int(SUPABASE_PORT),
+            user=SUPABASE_USER,
+            password=SUPABASE_PASSWORD,
+            database=SUPABASE_DB,
+            connect_timeout=10
         )
-        print(f"✅ Connected to database at {DB_HOST}")  # Optional: confirm connection
-        return db
+        print(f"✅ Connected to Supabase at {SUPABASE_HOST}:{SUPABASE_PORT}")
+        return conn
     except Exception as e:
         print(f"Database error: {e}")
         return None
@@ -67,7 +70,7 @@ def send_police_alert(vehicle_number, rfid_tag, location="Toll Plaza", reason="S
     
     alert_sent = False
     
-    # Method 1: Telegram Bot (Best - Free)
+    # Method 1: Telegram Bot
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
         try:
             telegram_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -81,7 +84,7 @@ def send_police_alert(vehicle_number, rfid_tag, location="Toll Plaza", reason="S
         except Exception as e:
             print(f"Telegram failed: {e}")
     
-    # Method 2: Email (Free)
+    # Method 2: Email
     if SENDER_EMAIL and SENDER_PASSWORD and POLICE_EMAIL:
         try:
             msg = MIMEText(message)
@@ -99,7 +102,7 @@ def send_police_alert(vehicle_number, rfid_tag, location="Toll Plaza", reason="S
         except Exception as e:
             print(f"Email failed: {e}")
     
-    # Method 3: SMS via Email Gateway (Free with carrier email)
+    # Method 3: SMS via Email Gateway
     if POLICE_SMS_EMAIL and SENDER_EMAIL and SENDER_PASSWORD:
         try:
             sms_msg = MIMEText(f"ALERT: Stolen vehicle {vehicle_number} at {location}!")
@@ -117,7 +120,7 @@ def send_police_alert(vehicle_number, rfid_tag, location="Toll Plaza", reason="S
         except Exception as e:
             print(f"SMS failed: {e}")
     
-    # Method 4: Webhook (For integration with police system)
+    # Method 4: Webhook
     if POLICE_WEBHOOK_URL:
         try:
             webhook_data = {
@@ -135,42 +138,47 @@ def send_police_alert(vehicle_number, rfid_tag, location="Toll Plaza", reason="S
             print(f"Webhook failed: {e}")
     
     # Always log to database
-    db = get_db_connection()
-    if db:
-        cursor = db.cursor()
+    conn = get_db_connection()
+    if conn:
+        cursor = conn.cursor()
         cursor.execute("""
-            INSERT INTO system_logs (action, user, details) 
+            INSERT INTO system_logs (action, username, details) 
             VALUES (%s, %s, %s)
         """, ("AUTOMATIC_POLICE_ALERT", "SYSTEM", f"Vehicle {vehicle_number} detected at {location} - {reason}"))
-        db.commit()
+        conn.commit()
         cursor.close()
-        db.close()
+        conn.close()
     
     return alert_sent
 
-# Initialize database and tables
+# ================= INITIALIZE DATABASE AND TABLES =================
 def init_db():
-    db = get_db_connection()
-    if not db:
+    """Create all tables in Supabase if they don't exist"""
+    conn = get_db_connection()
+    if not conn:
         print("⚠️ Database not available - will use memory mode for testing")
         return
     
-    cursor = db.cursor()
+    cursor = conn.cursor()
     
+    # Vehicles table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS vehicles (
-            id INT AUTO_INCREMENT PRIMARY KEY,
+            id SERIAL PRIMARY KEY,
             vehicle_number VARCHAR(50) UNIQUE,
             rfid_tag VARCHAR(100) UNIQUE,
             owner_name VARCHAR(100),
             vehicle_type VARCHAR(50),
-            owner_phone VARCHAR(20)
+            owner_phone VARCHAR(20),
+            status VARCHAR(20) DEFAULT 'active',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
     
+    # Transactions table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS transactions (
-            id INT AUTO_INCREMENT PRIMARY KEY,
+            id SERIAL PRIMARY KEY,
             rfid_tag VARCHAR(100),
             vehicle_number VARCHAR(50),
             amount DECIMAL(10,2),
@@ -179,31 +187,34 @@ def init_db():
         )
     """)
     
+    # Stolen vehicles table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS stolen_vehicles (
-            id INT AUTO_INCREMENT PRIMARY KEY,
+            id SERIAL PRIMARY KEY,
             vehicle_number VARCHAR(50),
             rfid_tag VARCHAR(100),
             owner_contact VARCHAR(20),
             police_station VARCHAR(100),
-            status ENUM('ACTIVE', 'RECOVERED') DEFAULT 'ACTIVE',
+            status VARCHAR(20) DEFAULT 'ACTIVE',
             reported_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
     
+    # System logs table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS system_logs (
-            id INT AUTO_INCREMENT PRIMARY KEY,
+            id SERIAL PRIMARY KEY,
             action VARCHAR(100),
-            user VARCHAR(50),
+            username VARCHAR(50),
             details TEXT,
             timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
     
+    # Police alerts table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS police_alerts (
-            id INT AUTO_INCREMENT PRIMARY KEY,
+            id SERIAL PRIMARY KEY,
             vehicle_number VARCHAR(50),
             alert_type VARCHAR(50),
             message TEXT,
@@ -212,31 +223,35 @@ def init_db():
         )
     """)
     
+    # Users table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
-            id INT AUTO_INCREMENT PRIMARY KEY,
+            id SERIAL PRIMARY KEY,
             username VARCHAR(50) UNIQUE,
             password VARCHAR(255),
             role VARCHAR(20)
         )
     """)
-    db.commit()
+    
+    conn.commit()
     
     # Create default admin
     cursor.execute("SELECT * FROM users WHERE username='admin'")
     if not cursor.fetchone():
-        cursor.execute("INSERT INTO users (username, password, role) VALUES (%s, %s, %s)",
-                       ("admin", hashlib.sha256("admin123".encode()).hexdigest(), "admin"))
-        db.commit()
+        cursor.execute("""
+            INSERT INTO users (username, password, role) 
+            VALUES (%s, %s, %s)
+        """, ("admin", hashlib.sha256("admin123".encode()).hexdigest(), "admin"))
+        conn.commit()
     
     cursor.close()
-    db.close()
-    print("✅ Database initialized")
+    conn.close()
+    print("✅ Supabase database initialized successfully!")
 
 # Call init_db when app starts
 init_db()
 
-# ================= ENHANCED DASHBOARD WITH POLICE ALERTS =================
+# ================= ENHANCED DASHBOARD HTML =================
 DASHBOARD_HTML = """
 <!DOCTYPE html>
 <html>
@@ -332,7 +347,6 @@ DASHBOARD_HTML = """
     <div class="panic-btn" onclick="triggerPanic()">🚨 PANIC - ALERT POLICE 🚨</div>
     
     <script>
-        // Auto-check for stolen vehicles every 3 seconds
         let lastAlertCount = 0;
         
         function checkStolenAlerts() {
@@ -340,7 +354,6 @@ DASHBOARD_HTML = """
                 .then(res => res.json())
                 .then(data => {
                     if(data.length > lastAlertCount) {
-                        // New stolen vehicle detected!
                         const newAlerts = data.slice(lastAlertCount);
                         newAlerts.forEach(alert => {
                             showPoliceNotification(alert.vehicle_number, alert.time);
@@ -363,11 +376,9 @@ DASHBOARD_HTML = """
             `;
             document.body.appendChild(notification);
             
-            // Play alert sound
             const audio = new Audio('data:audio/wav;base64,U3RlYWx0aCBzb3VuZA==');
             audio.play().catch(e => console.log);
             
-            // Browser notification
             if (Notification.permission === "granted") {
                 new Notification("🚨 POLICE ALERT!", {
                     body: `Stolen vehicle ${vehicle} detected at toll plaza! Police notified.`,
@@ -406,12 +417,7 @@ DASHBOARD_HTML = """
                 tbody.innerHTML = '';
                 d.forEach(t=>{
                     const statusClass = t.status.toLowerCase().includes('stolen') ? 'status-denied' : 'status-paid';
-                    tbody.innerHTML += `<tr>
-                        <td>${t.vehicle_number}</td>
-                        <td>$${t.amount}</td>
-                        <td class="${statusClass}">${t.status}</td>
-                        <td>${t.time}</td>
-                    </td>`;
+                    tbody.innerHTML += `<tr><td>${t.vehicle_number}</td><td>$${t.amount}</td><td class="${statusClass}">${t.status}</td><td>${t.time}</td></tr>`;
                 });
             });
         }
@@ -421,13 +427,7 @@ DASHBOARD_HTML = """
                 const tbody = document.getElementById('vehiclesList');
                 tbody.innerHTML = '';
                 d.forEach(v=>{
-                    tbody.innerHTML += `<tr>
-                        <td>${v.vehicle_number}</td>
-                        <td>${v.rfid_tag}</td>
-                        <td>${v.owner_name||'-'}</td>
-                        <td>${v.vehicle_type||'-'}</td>
-                        <td><button onclick="deleteVehicle(${v.id})" class="btn-danger">Delete</button></td>
-                    </tr>`;
+                    tbody.innerHTML += `<tr><td>${v.vehicle_number}</td><td>${v.rfid_tag}</td><td>${v.owner_name||'-'}</td><td>${v.vehicle_type||'-'}</td><td><button onclick="deleteVehicle(${v.id})" class="btn-danger">Delete</button></td></tr>`;
                 });
             });
         }
@@ -437,13 +437,7 @@ DASHBOARD_HTML = """
                 const tbody = document.getElementById('stolenList');
                 tbody.innerHTML = '';
                 d.forEach(s=>{
-                    tbody.innerHTML += `<tr>
-                        <td>${s.vehicle_number}</td>
-                        <td>${s.rfid_tag}</td>
-                        <td>${s.reported_date}</td>
-                        <td><span class="status-denied">ACTIVE ALERT</span></td>
-                        <td><button onclick="markRecovered('${s.vehicle_number}')" class="btn-warning">Mark Recovered</button></td>
-                    </tr>`;
+                    tbody.innerHTML += `<tr><td>${s.vehicle_number}</td><td>${s.rfid_tag}</td><td>${s.reported_date}</td><td><span class="status-denied">ACTIVE ALERT</span></td><td><button onclick="markRecovered('${s.vehicle_number}')" class="btn-warning">Mark Recovered</button></td></tr>`;
                 });
             });
         }
@@ -453,13 +447,7 @@ DASHBOARD_HTML = """
                 const tbody = document.getElementById('alertsList');
                 tbody.innerHTML = '';
                 d.forEach(a=>{
-                    tbody.innerHTML += `<tr>
-                        <td>${a.time}</td>
-                        <td>${a.vehicle_number}</td>
-                        <td>${a.alert_type}</td>
-                        <td><span class="${a.status === 'sent' ? 'status-paid' : 'status-denied'}">${a.status}</span></td>
-                        <td>${a.acknowledged ? '✅ Yes' : '⏳ Pending'}</td>
-                    </tr>`;
+                    tbody.innerHTML += `<tr><td>${a.time}</td><td>${a.vehicle_number}</td><td>${a.alert_type}</td><td><span class="${a.status === 'sent' ? 'status-paid' : 'status-denied'}">${a.status}</span></td><td>${a.acknowledged ? '✅ Yes' : '⏳ Pending'}</td></tr>`;
                 });
             });
         }
@@ -514,7 +502,6 @@ DASHBOARD_HTML = """
             });
         });
         
-        // Request notification permission
         if (Notification.permission === "default") {
             Notification.requestPermission();
         }
@@ -527,168 +514,185 @@ DASHBOARD_HTML = """
 </html>
 """
 
-# ================= API ROUTES =================
+# ================= API ROUTES (POSTGRESQL VERSION) =================
 @app.route("/")
 def dashboard():
     return render_template_string(DASHBOARD_HTML)
 
 @app.route("/api/stats")
 def get_stats():
-    db = get_db_connection()
-    if not db:
+    conn = get_db_connection()
+    if not conn:
         return jsonify({"vehicles":0, "today_transactions":0, "today_revenue":0, "stolen_alerts_today":0, "police_alerts_sent":0})
     
-    cursor = db.cursor()
+    cursor = conn.cursor()
     cursor.execute("SELECT COUNT(*) FROM vehicles")
     vehicles = cursor.fetchone()[0]
-    cursor.execute("SELECT COUNT(*) FROM transactions WHERE DATE(time)=CURDATE()")
+    
+    cursor.execute("SELECT COUNT(*) FROM transactions WHERE DATE(time)=CURRENT_DATE")
     today_tx = cursor.fetchone()[0]
-    cursor.execute("SELECT IFNULL(SUM(amount),0) FROM transactions WHERE DATE(time)=CURDATE()")
+    
+    cursor.execute("SELECT COALESCE(SUM(amount),0) FROM transactions WHERE DATE(time)=CURRENT_DATE")
     today_revenue = cursor.fetchone()[0]
-    cursor.execute("SELECT COUNT(*) FROM system_logs WHERE action='POLICE_ALERT' AND DATE(timestamp)=CURDATE()")
+    
+    cursor.execute("SELECT COUNT(*) FROM system_logs WHERE action='POLICE_ALERT' AND DATE(timestamp)=CURRENT_DATE")
     stolen_alerts = cursor.fetchone()[0]
-    cursor.execute("SELECT COUNT(*) FROM system_logs WHERE action='AUTOMATIC_POLICE_ALERT' AND DATE(timestamp)=CURDATE()")
+    
+    cursor.execute("SELECT COUNT(*) FROM system_logs WHERE action='AUTOMATIC_POLICE_ALERT' AND DATE(timestamp)=CURRENT_DATE")
     police_alerts = cursor.fetchone()[0]
+    
     cursor.close()
-    db.close()
+    conn.close()
     return jsonify({"vehicles":vehicles, "today_transactions":today_tx, "today_revenue":float(today_revenue), "stolen_alerts_today":stolen_alerts, "police_alerts_sent":police_alerts})
 
 @app.route("/api/transactions")
 def get_transactions():
-    db = get_db_connection()
-    if not db:
+    conn = get_db_connection()
+    if not conn:
         return jsonify([])
     
-    cursor = db.cursor()
-    cursor.execute("SELECT vehicle_number, amount, status, DATE_FORMAT(time, '%H:%i:%s') FROM transactions ORDER BY id DESC LIMIT 20")
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT vehicle_number, amount, status, TO_CHAR(time, 'HH24:MI:SS') 
+        FROM transactions 
+        ORDER BY id DESC LIMIT 20
+    """)
     data = [{"vehicle_number":r[0], "amount":float(r[1]), "status":r[2], "time":r[3]} for r in cursor.fetchall()]
     cursor.close()
-    db.close()
+    conn.close()
     return jsonify(data)
 
 @app.route("/api/vehicles")
 def get_vehicles():
-    db = get_db_connection()
-    if not db:
+    conn = get_db_connection()
+    if not conn:
         return jsonify([])
     
-    cursor = db.cursor()
+    cursor = conn.cursor()
     cursor.execute("SELECT id, vehicle_number, rfid_tag, owner_name, vehicle_type FROM vehicles")
     data = [{"id":r[0], "vehicle_number":r[1], "rfid_tag":r[2], "owner_name":r[3], "vehicle_type":r[4]} for r in cursor.fetchall()]
     cursor.close()
-    db.close()
+    conn.close()
     return jsonify(data)
 
 @app.route("/api/register_vehicle", methods=["POST"])
 def register_vehicle():
     data = request.json
-    db = get_db_connection()
-    if not db:
+    conn = get_db_connection()
+    if not conn:
         return jsonify({"message":"Database error"})
     
-    cursor = db.cursor()
-    cursor.execute("INSERT INTO vehicles (vehicle_number, rfid_tag, owner_name, vehicle_type, owner_phone) VALUES (%s,%s,%s,%s,%s)",
-                   (data['vehicle_number'], data['rfid_tag'], data['owner_name'], data['vehicle_type'], data.get('owner_phone', '')))
-    db.commit()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO vehicles (vehicle_number, rfid_tag, owner_name, vehicle_type, owner_phone) 
+        VALUES (%s, %s, %s, %s, %s)
+    """, (data['vehicle_number'], data['rfid_tag'], data['owner_name'], data['vehicle_type'], data.get('owner_phone', '')))
+    conn.commit()
     cursor.close()
-    db.close()
+    conn.close()
     return jsonify({"message": "Vehicle registered!"})
 
 @app.route("/api/delete_vehicle", methods=["POST"])
 def delete_vehicle():
     data = request.json
-    db = get_db_connection()
-    if not db:
+    conn = get_db_connection()
+    if not conn:
         return jsonify({"message":"Database error"})
     
-    cursor = db.cursor()
+    cursor = conn.cursor()
     cursor.execute("DELETE FROM vehicles WHERE id=%s", (data['id'],))
-    db.commit()
+    conn.commit()
     cursor.close()
-    db.close()
+    conn.close()
     return jsonify({"message": "Deleted"})
 
 @app.route("/api/report_stolen", methods=["POST"])
 def report_stolen():
     data = request.json
-    db = get_db_connection()
-    if not db:
+    conn = get_db_connection()
+    if not conn:
         return jsonify({"message":"Database error"})
     
-    cursor = db.cursor()
-    cursor.execute("INSERT INTO stolen_vehicles (vehicle_number, rfid_tag, owner_contact) VALUES (%s,%s,%s)",
-                   (data['vehicle_number'], data['rfid_tag'], data.get('owner_contact', '')))
-    cursor.execute("DELETE FROM vehicles WHERE vehicle_number=%s", (data['vehicle_number'],))
-    db.commit()
-    cursor.close()
-    db.close()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO stolen_vehicles (vehicle_number, rfid_tag, owner_contact) 
+        VALUES (%s, %s, %s)
+    """, (data['vehicle_number'], data['rfid_tag'], data.get('owner_contact', '')))
     
-    # Send automatic police alert
+    cursor.execute("DELETE FROM vehicles WHERE vehicle_number=%s", (data['vehicle_number'],))
+    conn.commit()
+    cursor.close()
+    conn.close()
+    
     send_police_alert(data['vehicle_number'], data['rfid_tag'], "Via Report Stolen", "VEHICLE MARKED STOLEN")
     
     return jsonify({"message": "Vehicle marked stolen! Police have been automatically alerted."})
 
 @app.route("/api/stolen_vehicles")
 def get_stolen():
-    db = get_db_connection()
-    if not db:
+    conn = get_db_connection()
+    if not conn:
         return jsonify([])
     
-    cursor = db.cursor()
-    cursor.execute("SELECT vehicle_number, rfid_tag, DATE(reported_date) FROM stolen_vehicles WHERE status='ACTIVE'")
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT vehicle_number, rfid_tag, TO_CHAR(reported_date, 'YYYY-MM-DD') 
+        FROM stolen_vehicles 
+        WHERE status='ACTIVE'
+    """)
     data = [{"vehicle_number":r[0], "rfid_tag":r[1], "reported_date":str(r[2])} for r in cursor.fetchall()]
     cursor.close()
-    db.close()
+    conn.close()
     return jsonify(data)
 
 @app.route("/api/stolen_alerts")
 def get_stolen_alerts():
-    db = get_db_connection()
-    if not db:
+    conn = get_db_connection()
+    if not conn:
         return jsonify([])
     
-    cursor = db.cursor()
+    cursor = conn.cursor()
     cursor.execute("""
-        SELECT vehicle_number, DATE_FORMAT(time, '%H:%i:%s') 
+        SELECT vehicle_number, TO_CHAR(time, 'HH24:MI:SS') 
         FROM transactions 
-        WHERE status='DENIED-STOLEN' AND time > DATE_SUB(NOW(), INTERVAL 1 HOUR)
+        WHERE status='DENIED-STOLEN' AND time > NOW() - INTERVAL '1 hour'
         ORDER BY time DESC
     """)
     data = [{"vehicle_number":r[0], "time":r[1]} for r in cursor.fetchall()]
     cursor.close()
-    db.close()
+    conn.close()
     return jsonify(data)
 
 @app.route("/api/alert_history")
 def get_alert_history():
-    db = get_db_connection()
-    if not db:
+    conn = get_db_connection()
+    if not conn:
         return jsonify([])
     
-    cursor = db.cursor()
+    cursor = conn.cursor()
     cursor.execute("""
-        SELECT DATE_FORMAT(timestamp, '%H:%i:%s'), details, action, 'sent' as status, false as acknowledged
+        SELECT TO_CHAR(timestamp, 'HH24:MI:SS'), details, action, 'sent' as status, false as acknowledged
         FROM system_logs 
         WHERE action IN ('POLICE_ALERT', 'AUTOMATIC_POLICE_ALERT')
         ORDER BY timestamp DESC LIMIT 20
     """)
     data = [{"time":r[0], "vehicle_number":r[1].split()[-1] if r[1] else "Unknown", "alert_type":r[2], "status":r[3], "acknowledged":r[4]} for r in cursor.fetchall()]
     cursor.close()
-    db.close()
+    conn.close()
     return jsonify(data)
 
 @app.route("/api/mark_recovered", methods=["POST"])
 def mark_recovered():
     data = request.json
-    db = get_db_connection()
-    if not db:
+    conn = get_db_connection()
+    if not conn:
         return jsonify({"message":"Database error"})
     
-    cursor = db.cursor()
+    cursor = conn.cursor()
     cursor.execute("UPDATE stolen_vehicles SET status='RECOVERED' WHERE vehicle_number=%s", (data['vehicle_number'],))
-    db.commit()
+    conn.commit()
     cursor.close()
-    db.close()
+    conn.close()
     return jsonify({"message": "Vehicle marked as recovered"})
 
 @app.route("/api/rfid", methods=["POST"])
@@ -696,24 +700,25 @@ def handle_rfid():
     data = request.json
     rfid_tag = data.get("rfid_tag")
     
-    db = get_db_connection()
-    if not db:
+    conn = get_db_connection()
+    if not conn:
         return jsonify({"status": "ERROR", "reason": "Database unavailable"})
     
-    cursor = db.cursor()
+    cursor = conn.cursor()
     
     # Check if stolen
     cursor.execute("SELECT vehicle_number FROM stolen_vehicles WHERE rfid_tag=%s AND status='ACTIVE'", (rfid_tag,))
     stolen = cursor.fetchone()
     if stolen:
         vehicle_number = stolen[0]
-        cursor.execute("INSERT INTO transactions (rfid_tag, vehicle_number, amount, status) VALUES (%s,%s,%s,%s)",
-                       (rfid_tag, vehicle_number, TOLL_AMOUNT, "DENIED-STOLEN"))
-        db.commit()
+        cursor.execute("""
+            INSERT INTO transactions (rfid_tag, vehicle_number, amount, status) 
+            VALUES (%s, %s, %s, %s)
+        """, (rfid_tag, vehicle_number, TOLL_AMOUNT, "DENIED-STOLEN"))
+        conn.commit()
         cursor.close()
-        db.close()
+        conn.close()
         
-        # 🔴 AUTOMATIC POLICE ALERT TRIGGERED 🔴
         send_police_alert(vehicle_number, rfid_tag, "Main Toll Plaza", "STOLEN VEHICLE ATTEMPTED TOLL PASSAGE")
         
         return jsonify({"status": "DENIED", "reason": "STOLEN VEHICLE - POLICE AUTOMATICALLY ALERTED"})
@@ -726,29 +731,33 @@ def handle_rfid():
         vehicle_number, owner, vehicle_type = vehicle
         price = TOLL_AMOUNT * 2 if vehicle_type == "Truck" else TOLL_AMOUNT * 1.5 if vehicle_type == "Bus" else TOLL_AMOUNT
         
-        cursor.execute("INSERT INTO transactions (rfid_tag, vehicle_number, amount, status) VALUES (%s,%s,%s,%s)",
-                       (rfid_tag, vehicle_number, price, "PAID"))
-        db.commit()
+        cursor.execute("""
+            INSERT INTO transactions (rfid_tag, vehicle_number, amount, status) 
+            VALUES (%s, %s, %s, %s)
+        """, (rfid_tag, vehicle_number, price, "PAID"))
+        conn.commit()
         cursor.close()
-        db.close()
+        conn.close()
         return jsonify({"status": "APPROVED", "vehicle": vehicle_number, "amount": price, "vehicle_type": vehicle_type})
     else:
         cursor.close()
-        db.close()
+        conn.close()
         return jsonify({"status": "DENIED", "reason": "UNKNOWN VEHICLE"})
 
 @app.route("/api/panic_alert", methods=["POST"])
 def panic():
     send_police_alert("EMERGENCY", "PANIC_BUTTON", "Toll Management System", "PANIC BUTTON ACTIVATED - EMERGENCY")
     
-    db = get_db_connection()
-    if db:
-        cursor = db.cursor()
-        cursor.execute("INSERT INTO system_logs (action, user, details) VALUES (%s,%s,%s)",
-                       ("PANIC_ALERT", "admin", "Emergency panic button activated - Police notified"))
-        db.commit()
+    conn = get_db_connection()
+    if conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO system_logs (action, username, details) 
+            VALUES (%s, %s, %s)
+        """, ("PANIC_ALERT", "admin", "Emergency panic button activated - Police notified"))
+        conn.commit()
         cursor.close()
-        db.close()
+        conn.close()
     return jsonify({"status": "panic_sent", "message": "Police have been notified!"})
 
 @app.route("/api/alert_police", methods=["POST"])
@@ -756,23 +765,29 @@ def alert_police():
     data = request.json
     send_police_alert(data.get('vehicle_number'), data.get('rfid_tag', 'MANUAL'), "Via Dashboard", "MANUAL POLICE ALERT")
     
-    db = get_db_connection()
-    if db:
-        cursor = db.cursor()
-        cursor.execute("INSERT INTO system_logs (action, user, details) VALUES (%s,%s,%s)",
-                       ("MANUAL_POLICE_ALERT", "admin", f"Manual alert for {data.get('vehicle_number')}"))
-        db.commit()
+    conn = get_db_connection()
+    if conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO system_logs (action, username, details) 
+            VALUES (%s, %s, %s)
+        """, ("MANUAL_POLICE_ALERT", "admin", f"Manual alert for {data.get('vehicle_number')}"))
+        conn.commit()
         cursor.close()
-        db.close()
+        conn.close()
     return jsonify({"status": "alert_sent", "message": "Police have been alerted!"})
 
 if __name__ == "__main__":
     print("="*60)
-    print("🚗 SMART TOLL SYSTEM WITH AUTOMATIC POLICE ALERTS 🚨")
+    print("🚗 SMART TOLL SYSTEM WITH SUPABASE 🚨")
     print("="*60)
     print("📱 Access Dashboard: http://localhost:5000")
     print("🔑 Login: admin / admin123")
     print("💰 Toll Amount: $1.50 USD")
     print("="*60)
     print("\n🚨 AUTOMATIC POLICE ALERT SYSTEM ACTIVE!")
-    print("   • Stolen vehicle")
+    print("   • Stolen vehicles trigger automatic police alerts")
+    print("   • Telegram/Email/SMS notifications supported")
+    print("="*60)
+    
+    app.run(host='0.0.0.0', port=5000, debug=True)
