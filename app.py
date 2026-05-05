@@ -341,7 +341,7 @@ DASHBOARD_HTML = """
         
         <div id="alertsTab" style="display:none;">
             <h3>📋 Police Alert History</h3>
-            <table><thead><tr><th>Time</th><th>Vehicle</th><th>Alert Type</th><th>Status</th><th>Acknowledged</th></tr></thead><tbody id="alertsList"></tbody></table>
+            <table><thead><tr><th>Time</th><th>Vehicle</th><th>Alert Type</th><th>Status</th><th>Acknowledged</th></tr></thead><tbody id="alertsList"></tbody></tr>
         </div>
     </div>
     
@@ -684,7 +684,8 @@ def get_alert_history():
 
 @app.route("/api/mark_recovered", methods=["POST"])
 def mark_recovered():
-    data = request.json    conn = get_db_connection()
+    data = request.json
+    conn = get_db_connection()
     if not conn:
         return jsonify({"message":"Database error"})
     
