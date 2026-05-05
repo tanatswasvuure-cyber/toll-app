@@ -39,8 +39,10 @@ def get_db_connection():
             user=DB_USER,
             password=DB_PASSWORD,
             database=DB_NAME,
+            port=int(os.environ.get('DB_PORT', 3306)),  # ← ADD THIS LINE
             autocommit=True
         )
+        print(f"✅ Connected to database at {DB_HOST}")  # Optional: confirm connection
         return db
     except Exception as e:
         print(f"Database error: {e}")
