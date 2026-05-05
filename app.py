@@ -163,17 +163,18 @@ def init_db():
     
     # Vehicles table
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS vehicles (
-            id SERIAL PRIMARY KEY,
-            vehicle_number VARCHAR(50) UNIQUE,
-            rfid_tag VARCHAR(100) UNIQUE,
-            owner_name VARCHAR(100),
-            vehicle_type VARCHAR(50),
-            owner_phone VARCHAR(20),
-            status VARCHAR(20) DEFAULT 'active',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
+    CREATE TABLE IF NOT EXISTS vehicles (
+        id SERIAL PRIMARY KEY,
+        vehicle_number VARCHAR(50) UNIQUE,
+        rfid_tag VARCHAR(100) UNIQUE,
+        owner_name VARCHAR(100),
+        vehicle_type VARCHAR(50),
+        owner_phone VARCHAR(20),
+        balance DECIMAL(10,2) DEFAULT 0,
+        status VARCHAR(20) DEFAULT 'active',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+""")
     
     # Transactions table
     cursor.execute("""
