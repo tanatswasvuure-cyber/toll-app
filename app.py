@@ -727,22 +727,51 @@ def handle_rfid():
     cursor.execute("SELECT vehicle_number, owner_name, vehicle_type FROM vehicles WHERE rfid_tag=%s", (rfid_tag,))
     vehicle = cursor.fetchone()
     
-    if vehicle:
-        vehicle_number, owner, vehicle_type = vehicle
-        price = TOLL_AMOUNT * 2 if vehicle_type == "Truck" else TOLL_AMOUNT * 1.5 if vehicle_type == "Bus" else TOLL_AMOUNT
-        
+# Check if registered
+cursor.execute("""
+    SELECT vehicle_number, owner_name, vehicle_type, COALESCE(balance, 0) as balance 
+    FROM vehicles 
+    WHERE rfid_tag=%s
+""", (rfid_tag,))
+vehicle = cursor.fetchone()
+
+if vehicle:
+    vehicle_number, owner, vehicle_type, balance = vehicle
+    price = TOLL_AMOUNT * 2 if vehicle_type == "Truck" else TOLL_AMOUNT * 1.5 if vehicle_type == "Bus" else TOLL_AMOUNT
+    
+    # Check balance
+    if balance < price:
+        # Insufficient balance
         cursor.execute("""
             INSERT INTO transactions (rfid_tag, vehicle_number, amount, status) 
             VALUES (%s, %s, %s, %s)
-        """, (rfid_tag, vehicle_number, price, "PAID"))
+        """, (rfid_tag, vehicle_number, price, "INSUFFICIENT_BALANCE"))
         conn.commit()
         cursor.close()
         conn.close()
-        return jsonify({"status": "APPROVED", "vehicle": vehicle_number, "amount": price, "vehicle_type": vehicle_type})
-    else:
-        cursor.close()
-        conn.close()
-        return jsonify({"status": "DENIED", "reason": "UNKNOWN VEHICLE"})
+        return jsonify({
+            "status": "DENIED", 
+            "reason": f"Insufficient balance. Need ${price}, have ${balance}"
+        })
+    
+    # Sufficient balance - deduct amount
+    new_balance = balance - price
+    cursor.execute("UPDATE vehicles SET balance = %s WHERE rfid_tag = %s", (new_balance, rfid_tag))
+    
+    cursor.execute("""
+        INSERT INTO transactions (rfid_tag, vehicle_number, amount, status) 
+        VALUES (%s, %s, %s, %s)
+    """, (rfid_tag, vehicle_number, price, "PAID"))
+    conn.commit()
+    cursor.close()
+    conn.close()
+    return jsonify({
+        "status": "APPROVED", 
+        "vehicle": vehicle_number, 
+        "amount": price, 
+        "vehicle_type": vehicle_type,
+        "balance_remaining": new_balance
+    })
 
 @app.route("/api/panic_alert", methods=["POST"])
 def panic():
