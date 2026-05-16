@@ -5,14 +5,12 @@ from psycopg2.extras import RealDictCursor
 from datetime import datetime
 import hashlib
 import os
-import requests
-import smtplib
-from email.mime.text import MIMEText
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'toll_system_secret_key_2025')
+app.config['DEBUG'] = False
 
-# ================= SUPABASE (POSTGRESQL) CONFIGURATION =================
+# ================= SUPABASE CONFIGURATION =================
 SUPABASE_HOST = os.environ.get('SUPABASE_HOST')
 SUPABASE_PORT = os.environ.get('SUPABASE_PORT', '5432')
 SUPABASE_USER = os.environ.get('SUPABASE_USER')
@@ -21,28 +19,8 @@ SUPABASE_DB = os.environ.get('SUPABASE_DB', 'postgres')
 
 TOLL_AMOUNT = float(os.environ.get('TOLL_AMOUNT', '1.50'))
 
-# ================= POLICE ALERT CONFIGURATION =================
-POLICE_SMS_EMAIL = os.environ.get('POLICE_SMS_EMAIL', '')
-POLICE_EMAIL = os.environ.get('POLICE_EMAIL', '')
-SENDER_EMAIL = os.environ.get('SENDER_EMAIL', '')
-SENDER_PASSWORD = os.environ.get('SENDER_PASSWORD', '')
-TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
-TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
-POLICE_WEBHOOK_URL = os.environ.get('POLICE_WEBHOOK_URL', '')
-
-# ================= LOGIN DECORATOR =================
-def login_required(f):
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        if 'user_id' not in session:
-            flash('Please login first', 'warning')
-            return redirect(url_for('login'))
-        return f(*args, **kwargs)
-    return decorated_function
-
-# ================= DATABASE CONNECTION FUNCTION =================
+# ================= DATABASE CONNECTION =================
 def get_db_connection():
-    """Connect to Supabase (PostgreSQL) database"""
     try:
         if not all([SUPABASE_HOST, SUPABASE_USER, SUPABASE_PASSWORD]):
             print("⚠️ Missing Supabase environment variables")
@@ -56,23 +34,30 @@ def get_db_connection():
             database=SUPABASE_DB,
             connect_timeout=10
         )
-        print(f"✅ Connected to Supabase at {SUPABASE_HOST}:{SUPABASE_PORT}")
         return conn
     except Exception as e:
         print(f"Database error: {e}")
         return None
 
-# ================= FIXED: DATABASE INITIALIZATION =================
+# ================= INITIALIZE DATABASE =================
 def init_db():
-    """Create all tables in Supabase if they don't exist"""
     conn = get_db_connection()
     if not conn:
-        print("⚠️ Database not available - will use memory mode for testing")
+        print("⚠️ Database not available")
         return
     
     cursor = conn.cursor()
     
-    # Create tables (same as your SQL)
+    # Create tables
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id SERIAL PRIMARY KEY,
+            username VARCHAR(50) UNIQUE,
+            password VARCHAR(255),
+            role VARCHAR(20)
+        )
+    """)
+    
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS vehicles (
             id SERIAL PRIMARY KEY,
@@ -120,134 +105,227 @@ def init_db():
         )
     """)
     
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS police_alerts (
-            id SERIAL PRIMARY KEY,
-            vehicle_number VARCHAR(50),
-            alert_type VARCHAR(50),
-            message TEXT,
-            acknowledged BOOLEAN DEFAULT FALSE,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id SERIAL PRIMARY KEY,
-            username VARCHAR(50) UNIQUE,
-            password VARCHAR(255),
-            role VARCHAR(20)
-        )
-    """)
-    
     conn.commit()
     
-    # FIXED: Create default admin with correct hash
+    # Create admin user if not exists
     cursor.execute("SELECT * FROM users WHERE username='admin'")
     if not cursor.fetchone():
-        # This hash matches 'admin123'
-        admin_hash = '8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918'
+        admin_hash = hashlib.sha256("admin123".encode()).hexdigest()
         cursor.execute("""
             INSERT INTO users (username, password, role) 
             VALUES (%s, %s, %s)
         """, ("admin", admin_hash, "admin"))
         conn.commit()
-        print("✅ Admin user created (admin/admin123)")
-    else:
-        print("✅ Admin user already exists")
+        print("✅ Admin user created")
     
-    # Insert test vehicles if none exist
+    # Insert test vehicles if none
     cursor.execute("SELECT COUNT(*) FROM vehicles")
-    vehicle_count = cursor.fetchone()[0]
-    if vehicle_count == 0:
+    if cursor.fetchone()[0] == 0:
         cursor.execute("""
             INSERT INTO vehicles (vehicle_number, rfid_tag, owner_name, vehicle_type, balance) 
             VALUES 
                 ('ABX001', '0A036432', 'Inno Mashefu', 'car', 50.00),
                 ('CAR002', '1122334455', 'John Doe', 'car', 25.50),
                 ('TRUCK001', 'AABBCCDDEE', 'Jane Smith', 'truck', 100.00)
-            ON CONFLICT (vehicle_number) DO NOTHING
         """)
         conn.commit()
         print("✅ Test vehicles added")
     
     cursor.close()
     conn.close()
-    print("✅ Database initialization complete")
+    print("✅ Database initialized")
 
-# ================= FIXED: LOGIN ROUTE WITH DEBUGGING =================
+# ================= SIMPLE LOGIN HTML =================
+LOGIN_HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Login</title>
+    <style>
+        body {
+            font-family: Arial;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            margin: 0;
+        }
+        .login-box {
+            background: white;
+            padding: 40px;
+            border-radius: 20px;
+            width: 350px;
+            text-align: center;
+        }
+        input {
+            width: 100%;
+            padding: 10px;
+            margin: 10px 0;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        button {
+            width: 100%;
+            padding: 10px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        .alert {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 5px;
+        }
+        .alert-danger { background: #fee; color: #dc2626; }
+        .alert-success { background: #efe; color: #16a34a; }
+    </style>
+</head>
+<body>
+    <div class="login-box">
+        <h2>🚗 Toll System</h2>
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% for category, message in messages %}
+                <div class="alert alert-{{ category }}">{{ message }}</div>
+            {% endfor %}
+        {% endwith %}
+        <form method="POST">
+            <input type="text" name="username" placeholder="Username" required>
+            <input type="password" name="password" placeholder="Password" required>
+            <button type="submit">Login</button>
+        </form>
+        <p style="margin-top: 20px; font-size: 12px;">admin / admin123</p>
+    </div>
+</body>
+</html>
+"""
+
+# ================= SIMPLE DASHBOARD HTML =================
+DASHBOARD_HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Dashboard</title>
+    <style>
+        body {
+            font-family: Arial;
+            background: #f0f2f5;
+            margin: 0;
+            padding: 20px;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .card {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        button, .logout-btn {
+            background: #ef4444;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-block;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th, td {
+            padding: 10px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        th {
+            background: #f8f9fa;
+        }
+        .btn-success {
+            background: #10b981;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h2>🚗 Smart Toll System</h2>
+        <div>
+            👤 {{ session.username }} ({{ session.role }})
+            <a href="/logout" class="logout-btn" style="margin-left: 10px;">Logout</a>
+        </div>
+    </div>
+    
+    <div class="card">
+        <h3>System Status</h3>
+        <p>✅ Toll system is running on Render.com</p>
+        <p>💰 Toll Amount: $1.50</p>
+        <p>📊 Database: Connected to Supabase</p>
+    </div>
+    
+    <div class="card">
+        <h3>API Endpoints</h3>
+        <ul>
+            <li>POST /api/rfid - Process RFID tag</li>
+            <li>GET /api/vehicles - List vehicles</li>
+            <li>GET /api/transactions - List transactions</li>
+        </ul>
+    </div>
+</body>
+</html>
+"""
+
+# ================= LOGIN DECORATOR =================
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user_id' not in session:
+            flash('Please login first', 'danger')
+            return redirect(url_for('login'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+# ================= ROUTES =================
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
         username = request.form['username']
-        password = request.form['password']
-        
-        # Hash the password
-        hashed_password = hashlib.sha256(password.encode()).hexdigest()
-        
-        print(f"🔐 Login attempt - Username: {username}")
-        print(f"Generated hash: {hashed_password}")
+        password = hashlib.sha256(request.form['password'].encode()).hexdigest()
         
         conn = get_db_connection()
-        if not conn:
-            flash('Database connection error. Please try again.', 'danger')
-            return render_template_string(LOGIN_HTML)
-        
-        try:
+        if conn:
             cursor = conn.cursor(cursor_factory=RealDictCursor)
-            
-            # First, check if users table exists
-            cursor.execute("""
-                SELECT EXISTS (
-                    SELECT FROM information_schema.tables 
-                    WHERE table_name = 'users'
-                )
-            """)
-            table_exists = cursor.fetchone()['exists']
-            
-            if not table_exists:
-                flash('System not initialized. Please contact administrator.', 'danger')
-                cursor.close()
-                conn.close()
-                return render_template_string(LOGIN_HTML)
-            
-            # Find user
-            cursor.execute("""
-                SELECT id, username, role 
-                FROM users 
-                WHERE username = %s AND password = %s
-            """, (username, hashed_password))
-            
+            cursor.execute("SELECT id, username, role FROM users WHERE username=%s AND password=%s", (username, password))
             user = cursor.fetchone()
+            cursor.close()
+            conn.close()
             
             if user:
                 session['user_id'] = user['id']
                 session['username'] = user['username']
                 session['role'] = user['role']
-                flash(f'Welcome back, {username}!', 'success')
+                flash('Login successful!', 'success')
                 return redirect(url_for('dashboard'))
-            else:
-                # Check if user exists but password wrong
-                cursor.execute("SELECT username FROM users WHERE username = %s", (username,))
-                user_exists = cursor.fetchone()
-                if user_exists:
-                    flash('Invalid password', 'danger')
-                else:
-                    flash('Invalid username', 'danger')
-            
-            cursor.close()
-        except Exception as e:
-            print(f"Login error: {e}")
-            flash('An error occurred. Please try again.', 'danger')
-        finally:
-            conn.close()
+        
+        flash('Invalid username or password', 'danger')
     
     return render_template_string(LOGIN_HTML)
 
 @app.route('/logout')
 def logout():
     session.clear()
-    flash('Logged out successfully', 'info')
     return redirect(url_for('login'))
 
 @app.route('/')
@@ -256,177 +334,159 @@ def logout():
 def dashboard():
     return render_template_string(DASHBOARD_HTML)
 
-# ================= TEST ENDPOINT (Remove after testing) =================
-@app.route('/test-db')
-def test_db():
-    """Test database connection and show users"""
-    conn = get_db_connection()
-    if not conn:
-        return "❌ Database connection failed"
-    
-    cursor = conn.cursor(cursor_factory=RealDictCursor)
-    
-    # Check users table
-    cursor.execute("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name='users')")
-    users_table = cursor.fetchone()['exists']
-    
-    result = "<h2>Database Status</h2>"
-    result += f"<p>Users table exists: {users_table}</p>"
-    
-    if users_table:
-        cursor.execute("SELECT username, role FROM users")
-        users = cursor.fetchall()
-        result += f"<p>Users found: {len(users)}</p>"
-        for user in users:
-            result += f"<p> - {user['username']} ({user['role']})</p>"
-    
-    cursor.close()
-    conn.close()
-    
-    return result
+# ================= API ENDPOINTS =================
+@app.route('/api/health', methods=['GET'])
+def health():
+    return jsonify({"status": "ok", "timestamp": datetime.now().isoformat()})
 
-# ================= REMAINING API ROUTES (same as your code) =================
-# ... (keep all your existing API routes: /api/topup, /api/stats, /api/transactions, 
-#      /api/vehicles, /api/register_vehicle, /api/delete_vehicle, /api/report_stolen,
-#      /api/stolen_vehicles, /api/mark_recovered, /api/alert_history, /api/rfid)
-
-# [INSERT ALL YOUR EXISTING API ROUTES HERE - they are correct]
-
-# ================= LOGIN HTML (same as your code) =================
-LOGIN_HTML = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Toll System Login</title>
-    <meta charset="UTF-8">
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { 
-            font-family: 'Segoe UI', Arial, sans-serif; 
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-        }
-        .login-container {
-            background: white;
-            border-radius: 20px;
-            padding: 40px;
-            width: 100%;
-            max-width: 400px;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
-        }
-        .login-header {
-            text-align: center;
-            margin-bottom: 30px;
-        }
-        .login-header h2 {
-            color: #333;
-            font-size: 28px;
-        }
-        .form-group {
-            margin-bottom: 20px;
-        }
-        label {
-            display: block;
-            margin-bottom: 8px;
-            color: #333;
-            font-weight: 500;
-        }
-        input {
-            width: 100%;
-            padding: 12px 15px;
-            border: 2px solid #e0e0e0;
-            border-radius: 10px;
-            font-size: 14px;
-        }
-        input:focus {
-            outline: none;
-            border-color: #667eea;
-        }
-        button {
-            width: 100%;
-            padding: 12px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            border: none;
-            border-radius: 10px;
-            font-size: 16px;
-            font-weight: bold;
-            cursor: pointer;
-        }
-        button:hover {
-            transform: translateY(-2px);
-        }
-        .alert {
-            padding: 12px;
-            border-radius: 10px;
-            margin-bottom: 20px;
-        }
-        .alert-danger {
-            background: #fee2e2;
-            color: #dc2626;
-            border: 1px solid #fecaca;
-        }
-        .alert-success {
-            background: #dcfce7;
-            color: #16a34a;
-            border: 1px solid #bbf7d0;
-        }
-    </style>
-</head>
-<body>
-    <div class="login-container">
-        <div class="login-header">
-            <h2>🚗 Toll System</h2>
-            <p>Login to access dashboard</p>
-        </div>
+@app.route('/api/rfid', methods=['POST'])
+def handle_rfid():
+    try:
+        data = request.json
+        rfid_tag = data.get('rfid_tag')
         
-        {% with messages = get_flashed_messages(with_categories=true) %}
-            {% if messages %}
-                {% for category, message in messages %}
-                    <div class="alert alert-{{ category }}">{{ message }}</div>
-                {% endfor %}
-            {% endif %}
-        {% endwith %}
+        if not rfid_tag:
+            return jsonify({"status": "ERROR", "message": "No RFID tag"}), 400
         
-        <form method="POST">
-            <div class="form-group">
-                <label>Username</label>
-                <input type="text" name="username" placeholder="Enter username" required autofocus>
-            </div>
-            <div class="form-group">
-                <label>Password</label>
-                <input type="password" name="password" placeholder="Enter password" required>
-            </div>
-            <button type="submit">Login</button>
-        </form>
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({"status": "ERROR", "message": "Database unavailable"}), 500
         
-        <div style="text-align: center; margin-top: 20px; color: #666; font-size: 12px;">
-            <p>Demo: admin / admin123</p>
-        </div>
-    </div>
-</body>
-</html>
-"""
+        cursor = conn.cursor()
+        
+        # Check if stolen
+        cursor.execute("SELECT vehicle_number FROM stolen_vehicles WHERE rfid_tag=%s AND status='ACTIVE'", (rfid_tag,))
+        stolen = cursor.fetchone()
+        if stolen:
+            cursor.execute("""
+                INSERT INTO transactions (rfid_tag, vehicle_number, amount, status, time) 
+                VALUES (%s, %s, %s, %s, NOW())
+            """, (rfid_tag, stolen[0], TOLL_AMOUNT, "DENIED-STOLEN"))
+            conn.commit()
+            cursor.close()
+            conn.close()
+            return jsonify({"status": "DENIED", "message": "STOLEN VEHICLE"})
+        
+        # Check vehicle
+        cursor.execute("""
+            SELECT vehicle_number, vehicle_type, COALESCE(balance, 0) as balance 
+            FROM vehicles WHERE rfid_tag=%s AND status='active'
+        """, (rfid_tag,))
+        vehicle = cursor.fetchone()
+        
+        if not vehicle:
+            cursor.close()
+            conn.close()
+            return jsonify({"status": "DENIED", "message": "Unknown vehicle"})
+        
+        vehicle_number, vehicle_type, balance = vehicle
+        price = TOLL_AMOUNT * 2 if vehicle_type == "Truck" else TOLL_AMOUNT * 1.5 if vehicle_type == "Bus" else TOLL_AMOUNT
+        
+        if balance < price:
+            cursor.execute("""
+                INSERT INTO transactions (rfid_tag, vehicle_number, amount, status, time) 
+                VALUES (%s, %s, %s, %s, NOW())
+            """, (rfid_tag, vehicle_number, price, "INSUFFICIENT"))
+            conn.commit()
+            cursor.close()
+            conn.close()
+            return jsonify({"status": "DENIED", "message": f"Insufficient balance. Need ${price}, have ${balance}"})
+        
+        # Process payment
+        new_balance = balance - price
+        cursor.execute("UPDATE vehicles SET balance = %s WHERE rfid_tag = %s", (new_balance, rfid_tag))
+        cursor.execute("""
+            INSERT INTO transactions (rfid_tag, vehicle_number, amount, status, time) 
+            VALUES (%s, %s, %s, %s, NOW())
+        """, (rfid_tag, vehicle_number, price, "APPROVED"))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            "status": "APPROVED",
+            "vehicle": vehicle_number,
+            "amount": price,
+            "balance_remaining": new_balance
+        })
+        
+    except Exception as e:
+        print(f"RFID error: {e}")
+        return jsonify({"status": "ERROR", "message": str(e)}), 500
 
-# ================= DASHBOARD HTML (keep your existing one) =================
-# [INSERT YOUR DASHBOARD_HTML HERE - it's correct]
+@app.route('/api/vehicles', methods=['GET'])
+@login_required
+def get_vehicles():
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return jsonify([])
+        
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, vehicle_number, rfid_tag, owner_name, vehicle_type, balance FROM vehicles WHERE status='active'")
+        data = [{"id": r[0], "vehicle_number": r[1], "rfid_tag": r[2], "owner_name": r[3], "vehicle_type": r[4], "balance": float(r[5])} for r in cursor.fetchall()]
+        cursor.close()
+        conn.close()
+        return jsonify(data)
+    except Exception as e:
+        print(f"Vehicles error: {e}")
+        return jsonify([])
 
-# Initialize database when app starts
-print("🔄 Initializing database...")
-init_db()
-print("🚀 Starting Flask app...")
+@app.route('/api/transactions', methods=['GET'])
+@login_required
+def get_transactions():
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return jsonify([])
+        
+        cursor = conn.cursor()
+        cursor.execute("SELECT vehicle_number, amount, status, TO_CHAR(time, 'HH24:MI:SS') FROM transactions ORDER BY id DESC LIMIT 20")
+        data = [{"vehicle_number": r[0], "amount": float(r[1]), "status": r[2], "time": r[3]} for r in cursor.fetchall()]
+        cursor.close()
+        conn.close()
+        return jsonify(data)
+    except Exception as e:
+        print(f"Transactions error: {e}")
+        return jsonify([])
 
+@app.route('/api/stolen_alerts', methods=['GET'])
+def stolen_alerts():
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return jsonify([])
+        
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT vehicle_number, TO_CHAR(time, 'HH24:MI:SS') as time
+            FROM transactions 
+            WHERE status='DENIED-STOLEN' AND time > NOW() - INTERVAL '1 hour'
+            ORDER BY time DESC
+            LIMIT 10
+        """)
+        data = [{"vehicle_number": r[0], "time": r[1]} for r in cursor.fetchall()]
+        cursor.close()
+        conn.close()
+        return jsonify(data)
+    except Exception as e:
+        print(f"Stolen alerts error: {e}")
+        return jsonify([])
+
+# ================= ERROR HANDLERS =================
+@app.errorhandler(404)
+def not_found(e):
+    return jsonify({"error": "Endpoint not found"}), 404
+
+@app.errorhandler(500)
+def internal_error(e):
+    return jsonify({"error": "Internal server error"}), 500
+
+# ================= START APP =================
 if __name__ == "__main__":
-    print("="*60)
-    print("🚗 SMART TOLL SYSTEM WITH SUPABASE 🚨")
-    print("="*60)
-    print("📱 Access Dashboard: http://localhost:5000/login")
-    print("🔑 Login: admin / admin123")
-    print("💰 Toll Amount: $1.50 USD")
-    print("="*60)
+    print("🔄 Initializing database...")
+    init_db()
+    print("🚀 Starting Flask app...")
     
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False)  # debug=False for Render
+    app.run(host='0.0.0.0', port=port, debug=False)
