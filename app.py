@@ -6,8 +6,6 @@ from datetime import datetime
 import hashlib
 import os
 import requests
-import smtplib
-from email.mime.text import MIMEText
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'toll_system_secret_key_2025')
@@ -21,14 +19,9 @@ SUPABASE_DB = os.environ.get('SUPABASE_DB', 'postgres')
 
 TOLL_AMOUNT = float(os.environ.get('TOLL_AMOUNT', '1.50'))
 
-# ================= POLICE ALERT CONFIGURATION =================
-POLICE_SMS_EMAIL = os.environ.get('POLICE_SMS_EMAIL', '')
-POLICE_EMAIL = os.environ.get('POLICE_EMAIL', '')
-SENDER_EMAIL = os.environ.get('SENDER_EMAIL', '')
-SENDER_PASSWORD = os.environ.get('SENDER_PASSWORD', '')
+# ================= POLICE ALERT CONFIGURATION (REDUCED) =================
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
-POLICE_WEBHOOK_URL = os.environ.get('POLICE_WEBHOOK_URL', '')
 
 # ================= LOGIN DECORATOR =================
 def login_required(f):
@@ -62,26 +55,26 @@ def get_db_connection():
         print(f"Database error: {e}")
         return None
 
-# ================= AUTOMATIC POLICE ALERT FUNCTION =================
+# ================= AUTOMATIC POLICE ALERT FUNCTION (REDUCED) =================
 def send_police_alert(vehicle_number, rfid_tag, location="Toll Plaza", reason="STOLEN VEHICLE DETECTED"):
-    """Send automatic alerts to police via multiple channels"""
+    """Send automatic alerts to police via Telegram only"""
     
     alert_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     message = f"""
-    🚨 POLICE EMERGENCY ALERT 🚨
-    
-    Vehicle: {vehicle_number}
-    RFID Tag: {rfid_tag}
-    Location: {location}
-    Time: {alert_time}
-    Reason: {reason}
-    
-    ACTION: Vehicle marked as stolen - Intercept immediately!
-    """
+🚨 POLICE EMERGENCY ALERT 🚨
+
+Vehicle: {vehicle_number}
+RFID Tag: {rfid_tag}
+Location: {location}
+Time: {alert_time}
+Reason: {reason}
+
+ACTION: Vehicle marked as stolen - Intercept immediately!
+"""
     
     alert_sent = False
     
-    # Method 1: Telegram Bot
+    # Method 1: Telegram Bot (Only method kept)
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
         try:
             telegram_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -94,59 +87,6 @@ def send_police_alert(vehicle_number, rfid_tag, location="Toll Plaza", reason="S
             alert_sent = True
         except Exception as e:
             print(f"Telegram failed: {e}")
-    
-    # Method 2: Email
-    if SENDER_EMAIL and SENDER_PASSWORD and POLICE_EMAIL:
-        try:
-            msg = MIMEText(message)
-            msg['Subject'] = f'🚨 POLICE ALERT - Stolen Vehicle {vehicle_number}'
-            msg['From'] = SENDER_EMAIL
-            msg['To'] = POLICE_EMAIL
-            
-            server = smtplib.SMTP('smtp.gmail.com', 587)
-            server.starttls()
-            server.login(SENDER_EMAIL, SENDER_PASSWORD)
-            server.send_message(msg)
-            server.quit()
-            print(f"✅ Email alert sent for {vehicle_number}")
-            alert_sent = True
-        except Exception as e:
-            print(f"Email failed: {e}")
-    
-    # Method 3: SMS via Email Gateway
-    if POLICE_SMS_EMAIL and SENDER_EMAIL and SENDER_PASSWORD:
-        try:
-            sms_msg = MIMEText(f"ALERT: Stolen vehicle {vehicle_number} at {location}!")
-            sms_msg['Subject'] = 'POLICE ALERT'
-            sms_msg['From'] = SENDER_EMAIL
-            sms_msg['To'] = POLICE_SMS_EMAIL
-            
-            server = smtplib.SMTP('smtp.gmail.com', 587)
-            server.starttls()
-            server.login(SENDER_EMAIL, SENDER_PASSWORD)
-            server.send_message(sms_msg)
-            server.quit()
-            print(f"✅ SMS alert sent for {vehicle_number}")
-            alert_sent = True
-        except Exception as e:
-            print(f"SMS failed: {e}")
-    
-    # Method 4: Webhook
-    if POLICE_WEBHOOK_URL:
-        try:
-            webhook_data = {
-                "alert_type": "stolen_vehicle",
-                "vehicle_number": vehicle_number,
-                "rfid_tag": rfid_tag,
-                "location": location,
-                "timestamp": alert_time,
-                "severity": "HIGH"
-            }
-            requests.post(POLICE_WEBHOOK_URL, json=webhook_data, timeout=5)
-            print(f"✅ Webhook alert sent for {vehicle_number}")
-            alert_sent = True
-        except Exception as e:
-            print(f"Webhook failed: {e}")
     
     # Always log to database
     conn = get_db_connection()
@@ -895,21 +835,17 @@ DASHBOARD_HTML = """
         let currentTopupVehicle = null;
         
         function showPanel(panel) {
-            // Update sidebar active state
             document.querySelectorAll('.menu-item').forEach(item => {
                 item.classList.remove('active');
             });
             event.target.closest('.menu-item').classList.add('active');
             
-            // Hide all panels
             document.querySelectorAll('.content-panel').forEach(p => {
                 p.classList.remove('active');
             });
             
-            // Show selected panel
             document.getElementById(panel + 'Panel').classList.add('active');
             
-            // Update page title
             const titles = {
                 'dashboard': 'Dashboard',
                 'vehicles': 'Vehicles Management',
@@ -920,7 +856,6 @@ DASHBOARD_HTML = """
             };
             document.getElementById('pageTitle').innerText = titles[panel] || panel;
             
-            // Load data for specific panels
             if(panel === 'vehicles') loadVehicles();
             if(panel === 'stolen') loadStolen();
             if(panel === 'alerts') loadAlertHistory();
@@ -975,7 +910,12 @@ DASHBOARD_HTML = """
                 tbody.innerHTML = '';
                 d.slice(0, 10).forEach(t=>{
                     const statusClass = t.status.toLowerCase().includes('stolen') ? 'status-denied' : 'status-paid';
-                    tbody.innerHTML += `<tr><td>${t.vehicle_number}</td><td>$${t.amount}</td><td class="${statusClass}">${t.status}</td><td>${t.time}</td></tr>`;
+                    tbody.innerHTML += `<tr>
+                        <td>${t.vehicle_number}</td>
+                        <td>$${t.amount}</td>
+                        <td class="${statusClass}">${t.status}</td>
+                        <td>${t.time}</td>
+                    </tr>`;
                 });
             });
         }
@@ -986,7 +926,12 @@ DASHBOARD_HTML = """
                 tbody.innerHTML = '';
                 d.forEach(t=>{
                     const statusClass = t.status.toLowerCase().includes('stolen') ? 'status-denied' : 'status-paid';
-                    tbody.innerHTML += `<tr><td>${t.vehicle_number}</td><td>$${t.amount}</td><td class="${statusClass}">${t.status}</td><td>${t.time}</td></tr>`;
+                    tbody.innerHTML += `<tr>
+                        <td>${t.vehicle_number}</td>
+                        <td>$${t.amount}</td>
+                        <td class="${statusClass}">${t.status}</td>
+                        <td>${t.time}</td>
+                    </tr>`;
                 });
             });
         }
@@ -1006,7 +951,7 @@ DASHBOARD_HTML = """
                             <button onclick="showTopupModal('${v.vehicle_number}')" class="btn-success btn-sm" style="margin-right:5px;">💰 Add</button>
                             <button onclick="deleteVehicle(${v.id})" class="btn-danger btn-sm">Delete</button>
                         </td>
-                    </tr>`;
+                    `;
                 });
             });
         }
@@ -1029,7 +974,7 @@ DASHBOARD_HTML = """
                         <td><code>${s.rfid_tag}</code></td>
                         <td>${s.reported_date}</td>
                         <td><button onclick="markRecovered('${s.vehicle_number}')" class="btn-warning btn-sm">Mark Recovered</button></td>
-                    </tr>`;
+                    `;
                 });
             });
         }
@@ -1044,7 +989,7 @@ DASHBOARD_HTML = """
                         <td>${a.vehicle_number}</td>
                         <td>${a.alert_type}</td>
                         <td class="${a.status === 'sent' ? 'status-paid' : 'status-denied'}">${a.status}</td>
-                    </tr>`;
+                    `;
                 });
             });
         }
@@ -1172,7 +1117,6 @@ def topup_balance():
         
         cursor = conn.cursor()
         
-        # Update balance
         cursor.execute("""
             UPDATE vehicles 
             SET balance = COALESCE(balance, 0) + %s 
@@ -1184,11 +1128,9 @@ def topup_balance():
             conn.close()
             return jsonify({"message": f"Vehicle {vehicle_number} not found"}), 404
         
-        # Get new balance
         cursor.execute("SELECT balance FROM vehicles WHERE vehicle_number = %s", (vehicle_number,))
         new_balance = cursor.fetchone()[0]
         
-        # Log transaction
         cursor.execute("""
             INSERT INTO system_logs (action, username, details) 
             VALUES (%s, %s, %s)
@@ -1386,9 +1328,12 @@ def handle_rfid():
     data = request.json
     rfid_tag = data.get("rfid_tag")
     
+    if not rfid_tag:
+        return jsonify({"status": "ERROR", "reason": "No RFID tag"}), 400
+    
     conn = get_db_connection()
     if not conn:
-        return jsonify({"status": "ERROR", "reason": "Database unavailable"})
+        return jsonify({"status": "ERROR", "reason": "Database unavailable"}), 500
     
     cursor = conn.cursor()
     
@@ -1398,8 +1343,8 @@ def handle_rfid():
     if stolen:
         vehicle_number = stolen[0]
         cursor.execute("""
-            INSERT INTO transactions (rfid_tag, vehicle_number, amount, status) 
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO transactions (rfid_tag, vehicle_number, amount, status, time) 
+            VALUES (%s, %s, %s, %s, NOW())
         """, (rfid_tag, vehicle_number, TOLL_AMOUNT, "DENIED-STOLEN"))
         conn.commit()
         cursor.close()
@@ -1421,29 +1366,28 @@ def handle_rfid():
         vehicle_number, owner, vehicle_type, balance = vehicle
         price = TOLL_AMOUNT * 2 if vehicle_type == "Truck" else TOLL_AMOUNT * 1.5 if vehicle_type == "Bus" else TOLL_AMOUNT
         
+        # ✅ CHECK BALANCE FIRST - NO TRANSACTION IF INSUFFICIENT
         if balance < price:
-            cursor.execute("""
-                INSERT INTO transactions (rfid_tag, vehicle_number, amount, status) 
-                VALUES (%s, %s, %s, %s)
-            """, (rfid_tag, vehicle_number, price, "INSUFFICIENT_BALANCE"))
-            conn.commit()
             cursor.close()
             conn.close()
+            # Return denied WITHOUT recording any transaction
             return jsonify({
                 "status": "DENIED", 
                 "reason": f"Insufficient balance. Need ${price}, have ${balance}"
             })
         
+        # ✅ ONLY PROCESS IF BALANCE IS SUFFICIENT
         new_balance = balance - price
         cursor.execute("UPDATE vehicles SET balance = %s WHERE rfid_tag = %s", (new_balance, rfid_tag))
         
         cursor.execute("""
-            INSERT INTO transactions (rfid_tag, vehicle_number, amount, status) 
-            VALUES (%s, %s, %s, %s)
-        """, (rfid_tag, vehicle_number, price, "PAID"))
+            INSERT INTO transactions (rfid_tag, vehicle_number, amount, status, time) 
+            VALUES (%s, %s, %s, %s, NOW())
+        """, (rfid_tag, vehicle_number, price, "APPROVED"))
         conn.commit()
         cursor.close()
         conn.close()
+        
         return jsonify({
             "status": "APPROVED", 
             "vehicle": vehicle_number, 
@@ -1456,6 +1400,39 @@ def handle_rfid():
         conn.close()
         return jsonify({"status": "DENIED", "reason": "UNKNOWN VEHICLE"})
 
+@app.route("/api/panic_alert", methods=["POST"])
+def panic():
+    send_police_alert("EMERGENCY", "PANIC_BUTTON", "Toll Management System", "PANIC BUTTON ACTIVATED - EMERGENCY")
+    
+    conn = get_db_connection()
+    if conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO system_logs (action, username, details) 
+            VALUES (%s, %s, %s)
+        """, ("PANIC_ALERT", "admin", "Emergency panic button activated - Police notified"))
+        conn.commit()
+        cursor.close()
+        conn.close()
+    return jsonify({"status": "panic_sent", "message": "Police have been notified!"})
+
+@app.route("/api/alert_police", methods=["POST"])
+def alert_police():
+    data = request.json
+    send_police_alert(data.get('vehicle_number'), data.get('rfid_tag', 'MANUAL'), "Via Dashboard", "MANUAL POLICE ALERT")
+    
+    conn = get_db_connection()
+    if conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO system_logs (action, username, details) 
+            VALUES (%s, %s, %s)
+        """, ("MANUAL_POLICE_ALERT", "admin", f"Manual alert for {data.get('vehicle_number')}"))
+        conn.commit()
+        cursor.close()
+        conn.close()
+    return jsonify({"status": "alert_sent", "message": "Police have been alerted!"})
+
 if __name__ == "__main__":
     print("="*60)
     print("🚗 SMART TOLL SYSTEM WITH SUPABASE 🚨")
@@ -1464,10 +1441,10 @@ if __name__ == "__main__":
     print("🔑 Login: admin / admin123")
     print("💰 Toll Amount: $1.50 USD")
     print("="*60)
-    print("\n✨ NEW FEATURES:")
+    print("\n✨ FEATURES:")
     print("   • Sidebar navigation menu")
     print("   • Add money directly from vehicles list")
-    print("   • Clean responsive design")
+    print("   • Telegram police alerts (only)")
     print("="*60)
     
     app.run(host='0.0.0.0', port=5000, debug=True)
