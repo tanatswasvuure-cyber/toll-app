@@ -1352,12 +1352,12 @@ def handle_rfid():
         
         if stolen:
             vehicle_number = stolen[0]
-            # Log the attempt — amount = 0 (no deduction for stolen)
+            # Record denied with ACTUAL toll amount (NO deduction from balance)
             cursor.execute("""
                 INSERT INTO transactions 
                     (rfid_tag, vehicle_number, amount, status, time) 
                 VALUES (%s, %s, %s, %s, NOW())
-            """, (rfid_tag, vehicle_number, 0, "DENIED-STOLEN"))
+            """, (rfid_tag, vehicle_number, TOLL_AMOUNT, "DENIED-STOLEN"))
             conn.commit()
             
             send_police_alert(
@@ -1381,13 +1381,7 @@ def handle_rfid():
         vehicle = cursor.fetchone()
 
         if not vehicle:
-            # Unknown / unregistered — no deduction, amount = 0
-            cursor.execute("""
-                INSERT INTO transactions 
-                    (rfid_tag, vehicle_number, amount, status, time)
-                VALUES (%s, %s, %s, %s, NOW())
-            """, (rfid_tag, "UNKNOWN", 0, "DENIED-UNREGISTERED"))
-            conn.commit()
+            # Unknown / unregistered — NO transaction record at all
             return jsonify({
                 "status": "DENIED",
                 "reason": "UNKNOWN VEHICLE - Not registered in system"
@@ -1405,12 +1399,12 @@ def handle_rfid():
             price = round(TOLL_AMOUNT, 2)
 
         if balance < price:
-            # ── INSUFFICIENT BALANCE — NO DEDUCTION ─────────────
+            # ── INSUFFICIENT BALANCE — Record denied with actual amount, NO deduction ──
             cursor.execute("""
                 INSERT INTO transactions 
                     (rfid_tag, vehicle_number, amount, status, time)
                 VALUES (%s, %s, %s, %s, NOW())
-            """, (rfid_tag, vehicle_number, 0, "DENIED-LOW BALANCE"))
+            """, (rfid_tag, vehicle_number, price, "DENIED-INSUFFICIENT BALANCE"))
             conn.commit()
             return jsonify({
                 "status": "DENIED",
