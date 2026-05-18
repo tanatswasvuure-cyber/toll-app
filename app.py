@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify, render_template_string, session, redirect, url_for, flash
 from functools import wraps
+from flask_cors import CORS
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from datetime import datetime
@@ -8,6 +9,7 @@ import os
 import requests
 
 app = Flask(__name__)
+CORS(app)  # Allow all origins to access your API
 app.secret_key = os.environ.get('SECRET_KEY', 'toll_system_secret_key_2025')
 
 # ================= SUPABASE (POSTGRESQL) CONFIGURATION =================
@@ -1492,14 +1494,15 @@ if __name__ == "__main__":
     print("="*60)
     print("🚗 SMART TOLL SYSTEM WITH SUPABASE 🚨")
     print("="*60)
-    print("📱 Access Dashboard: http://localhost:5000/login")
-    print("🔑 Login: admin / admin123")
     print("💰 Toll Amount: $1.50 USD")
     print("="*60)
     print("\n✨ FEATURES:")
     print("   • Sidebar navigation menu")
     print("   • Add money directly from vehicles list")
     print("   • Telegram police alerts (only)")
+    print("   • CORS enabled for external access")
     print("="*60)
     
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    # Get port from environment variable (Render sets this automatically)
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
