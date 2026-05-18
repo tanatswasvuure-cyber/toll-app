@@ -1,6 +1,5 @@
 from flask import Flask, request, jsonify, render_template_string, session, redirect, url_for, flash
 from functools import wraps
-from flask_cors import CORS
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from datetime import datetime
@@ -9,7 +8,6 @@ import os
 import requests
 
 app = Flask(__name__)
-CORS(app)  # Allow all origins to access your API
 app.secret_key = os.environ.get('SECRET_KEY', 'toll_system_secret_key_2025')
 
 # ================= SUPABASE (POSTGRESQL) CONFIGURATION =================
@@ -1328,13 +1326,10 @@ def get_alert_history():
 @app.route("/api/rfid", methods=["POST"])
 def handle_rfid():
     data = request.json
+    rfid_tag = data.get("rfid_tag")
     
-    # ── Validate input ──────────────────────────────────────────
-    if not data or not data.get("rfid_tag"):
-        return jsonify({"status": "ERROR", "reason": "No RFID tag provided"}), 400
-    
-    # Normalise tag: strip whitespace, uppercase — matches DB format
-    rfid_tag = str(data.get("rfid_tag")).strip().upper()
+    if not rfid_tag:
+        return jsonify({"status": "ERROR", "reason": "No RFID tag"}), 400
     
     conn = get_db_connection()
     if not conn:
@@ -1342,120 +1337,68 @@ def handle_rfid():
     
     cursor = conn.cursor()
     
-    try:
-        # ── 1. STOLEN CHECK ─────────────────────────────────────
+    # Check if stolen
+    cursor.execute("SELECT vehicle_number FROM stolen_vehicles WHERE rfid_tag=%s AND status='ACTIVE'", (rfid_tag,))
+    stolen = cursor.fetchone()
+    if stolen:
+        vehicle_number = stolen[0]
         cursor.execute("""
-            SELECT vehicle_number 
-            FROM stolen_vehicles 
-            WHERE UPPER(TRIM(rfid_tag)) = %s 
-            AND status = 'ACTIVE'
-        """, (rfid_tag,))
-        stolen = cursor.fetchone()
-        
-        if stolen:
-            vehicle_number = stolen[0]
-            # Record denied with ACTUAL toll amount (NO deduction from balance)
-            cursor.execute("""
-                INSERT INTO transactions 
-                    (rfid_tag, vehicle_number, amount, status, time) 
-                VALUES (%s, %s, %s, %s, NOW())
-            """, (rfid_tag, vehicle_number, TOLL_AMOUNT, "DENIED-STOLEN"))
-            conn.commit()
-            
-            send_police_alert(
-                vehicle_number, rfid_tag,
-                "Main Toll Plaza",
-                "STOLEN VEHICLE ATTEMPTED TOLL PASSAGE"
-            )
-            return jsonify({
-                "status": "DENIED",
-                "reason": "STOLEN VEHICLE - POLICE AUTOMATICALLY ALERTED"
-            })
-
-        # ── 2. REGISTERED VEHICLE CHECK ─────────────────────────
-        cursor.execute("""
-            SELECT vehicle_number, owner_name, vehicle_type,
-                   COALESCE(balance, 0) AS balance
-            FROM vehicles
-            WHERE UPPER(TRIM(rfid_tag)) = %s
-            AND   LOWER(status) = 'active'
-        """, (rfid_tag,))
-        vehicle = cursor.fetchone()
-
-        if not vehicle:
-            # Unknown / unregistered — NO transaction record at all
-            return jsonify({
-                "status": "DENIED",
-                "reason": "UNKNOWN VEHICLE - Not registered in system"
-            })
-
-        # ── 3. BALANCE CHECK ────────────────────────────────────
-        vehicle_number, owner, vehicle_type, balance = vehicle
-
-        # Toll pricing by vehicle type
-        if vehicle_type and vehicle_type.lower() == "truck":
-            price = round(TOLL_AMOUNT * 2, 2)
-        elif vehicle_type and vehicle_type.lower() == "bus":
-            price = round(TOLL_AMOUNT * 1.5, 2)
-        else:
-            price = round(TOLL_AMOUNT, 2)
-
-        if balance < price:
-            # ── INSUFFICIENT BALANCE — Record denied with actual amount, NO deduction ──
-            cursor.execute("""
-                INSERT INTO transactions 
-                    (rfid_tag, vehicle_number, amount, status, time)
-                VALUES (%s, %s, %s, %s, NOW())
-            """, (rfid_tag, vehicle_number, price, "DENIED-INSUFFICIENT BALANCE"))
-            conn.commit()
-            return jsonify({
-                "status": "DENIED",
-                "reason": (
-                    f"Insufficient balance. "
-                    f"Toll fee: ${price:.2f} | "
-                    f"Your balance: ${float(balance):.2f}"
-                )
-            })
-
-        # ── 4. APPROVED — DEDUCT NOW ─────────────────────────────
-        new_balance = round(float(balance) - price, 2)
-
-        # Update balance
-        cursor.execute("""
-            UPDATE vehicles 
-            SET balance = %s 
-            WHERE UPPER(TRIM(rfid_tag)) = %s
-        """, (new_balance, rfid_tag))
-
-        # Log approved transaction with actual amount deducted
-        cursor.execute("""
-            INSERT INTO transactions 
-                (rfid_tag, vehicle_number, amount, status, time)
+            INSERT INTO transactions (rfid_tag, vehicle_number, amount, status, time) 
             VALUES (%s, %s, %s, %s, NOW())
-        """, (rfid_tag, vehicle_number, price, "APPROVED"))
-
+        """, (rfid_tag, vehicle_number, TOLL_AMOUNT, "DENIED-STOLEN"))
         conn.commit()
-
-        return jsonify({
-            "status":            "APPROVED",
-            "vehicle":           vehicle_number,
-            "owner":             owner,
-            "vehicle_type":      vehicle_type,
-            "amount_deducted":   price,
-            "balance_remaining": new_balance
-        })
-
-    except Exception as e:
-        conn.rollback()
-        print(f"❌ RFID handler error: {e}")
-        return jsonify({
-            "status": "ERROR",
-            "reason": f"Server error: {str(e)}"
-        }), 500
-
-    finally:
         cursor.close()
         conn.close()
+        
+        send_police_alert(vehicle_number, rfid_tag, "Main Toll Plaza", "STOLEN VEHICLE ATTEMPTED TOLL PASSAGE")
+        
+        return jsonify({"status": "DENIED", "reason": "STOLEN VEHICLE - POLICE AUTOMATICALLY ALERTED"})
+    
+    # Check if registered with balance
+    cursor.execute("""
+        SELECT vehicle_number, owner_name, vehicle_type, COALESCE(balance, 0) as balance 
+        FROM vehicles 
+        WHERE rfid_tag=%s AND status='active'
+    """, (rfid_tag,))
+    vehicle = cursor.fetchone()
+    
+    if vehicle:
+        vehicle_number, owner, vehicle_type, balance = vehicle
+        price = TOLL_AMOUNT * 2 if vehicle_type == "Truck" else TOLL_AMOUNT * 1.5 if vehicle_type == "Bus" else TOLL_AMOUNT
+        
+        # ✅ CHECK BALANCE FIRST - NO TRANSACTION IF INSUFFICIENT
+        if balance < price:
+            cursor.close()
+            conn.close()
+            # Return denied WITHOUT recording any transaction
+            return jsonify({
+                "status": "DENIED", 
+                "reason": f"Insufficient balance. Need ${price}, have ${balance}"
+            })
+        
+        # ✅ ONLY PROCESS IF BALANCE IS SUFFICIENT
+        new_balance = balance - price
+        cursor.execute("UPDATE vehicles SET balance = %s WHERE rfid_tag = %s", (new_balance, rfid_tag))
+        
+        cursor.execute("""
+            INSERT INTO transactions (rfid_tag, vehicle_number, amount, status, time) 
+            VALUES (%s, %s, %s, %s, NOW())
+        """, (rfid_tag, vehicle_number, price, "APPROVED"))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            "status": "APPROVED", 
+            "vehicle": vehicle_number, 
+            "amount": price, 
+            "vehicle_type": vehicle_type,
+            "balance_remaining": new_balance
+        })
+    else:
+        cursor.close()
+        conn.close()
+        return jsonify({"status": "DENIED", "reason": "UNKNOWN VEHICLE"})
 
 @app.route("/api/panic_alert", methods=["POST"])
 def panic():
@@ -1494,15 +1437,14 @@ if __name__ == "__main__":
     print("="*60)
     print("🚗 SMART TOLL SYSTEM WITH SUPABASE 🚨")
     print("="*60)
+    print("📱 Access Dashboard: http://localhost:5000/login")
+    print("🔑 Login: admin / admin123")
     print("💰 Toll Amount: $1.50 USD")
     print("="*60)
     print("\n✨ FEATURES:")
     print("   • Sidebar navigation menu")
     print("   • Add money directly from vehicles list")
     print("   • Telegram police alerts (only)")
-    print("   • CORS enabled for external access")
     print("="*60)
     
-    # Get port from environment variable (Render sets this automatically)
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=5000, debug=True
