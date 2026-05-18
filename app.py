@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify, render_template_string, session, redirect, url_for, flash
 from functools import wraps
+from flask_cors import CORS
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from datetime import datetime
@@ -8,6 +9,7 @@ import os
 import requests
 
 app = Flask(__name__)
+CORS(app)
 app.secret_key = os.environ.get('SECRET_KEY', 'toll_system_secret_key_2025')
 
 # ================= SUPABASE (POSTGRESQL) CONFIGURATION =================
@@ -322,7 +324,7 @@ LOGIN_HTML = """
 </html>
 """
 
-# ================= DASHBOARD HTML WITH SIDEBAR =================
+# ================= DASHBOARD HTML WITH SETTINGS TAB =================
 DASHBOARD_HTML = """
 <!DOCTYPE html>
 <html>
@@ -636,6 +638,25 @@ DASHBOARD_HTML = """
             margin-bottom: 0;
         }
         
+        /* Settings Panel */
+        .settings-card {
+            background: #f8f9fa;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+            border: 1px solid #e0e0e0;
+        }
+        
+        .settings-card h3 {
+            color: #333;
+            margin-bottom: 15px;
+        }
+        
+        .settings-card p {
+            color: #666;
+            margin-bottom: 15px;
+        }
+        
         /* Scrollbar */
         ::-webkit-scrollbar {
             width: 8px;
@@ -691,6 +712,9 @@ DASHBOARD_HTML = """
             </div>
             <div class="menu-item" onclick="showPanel('alerts')">
                 <i>🚨</i> <span>Police Alerts</span>
+            </div>
+            <div class="menu-item" onclick="showPanel('settings')">
+                <i>⚙️</i> <span>Settings</span>
             </div>
         </div>
         <div class="user-info">
@@ -807,12 +831,37 @@ DASHBOARD_HTML = """
         <div id="alertsPanel" class="content-panel">
             <div class="panel-title">🚨 Police Alert History</div>
             <div style="overflow-x: auto;">
-                <table>
+                <tr>
                     <thead>
                         <tr><th>Time</th><th>Vehicle</th><th>Alert Type</th><th>Status</th>
                     </thead>
                     <tbody id="alertsList"></tbody>
                 </table>
+            </div>
+        </div>
+        
+        <!-- Settings Panel -->
+        <div id="settingsPanel" class="content-panel">
+            <div class="panel-title">⚙️ System Settings</div>
+            
+            <div class="settings-card">
+                <h3>🗑️ Reset Transactions</h3>
+                <p>This will delete ALL transaction records. This action cannot be undone.</p>
+                <button onclick="resetTransactions()" class="btn-danger">Reset Transactions Table</button>
+            </div>
+            
+            <div class="settings-card">
+                <h3>💰 Toll Amount</h3>
+                <p>Current toll amount: <strong>$<span id="currentTollAmount">1.50</span></strong></p>
+                <input type="number" id="newTollAmount" step="0.50" placeholder="Enter new toll amount">
+                <button onclick="updateTollAmount()" class="btn-success">Update Toll Amount</button>
+            </div>
+            
+            <div class="settings-card">
+                <h3>📊 Database Statistics</h3>
+                <p>Total Transactions: <strong id="totalTransactionsCount">0</strong></p>
+                <p>Total Vehicles: <strong id="totalVehiclesCount">0</strong></p>
+                <p>Stolen Vehicles: <strong id="totalStolenCount">0</strong></p>
             </div>
         </div>
     </div>
@@ -852,7 +901,8 @@ DASHBOARD_HTML = """
                 'transactions': 'Transaction History',
                 'register': 'Register Vehicle',
                 'stolen': 'Stolen Vehicles',
-                'alerts': 'Police Alerts'
+                'alerts': 'Police Alerts',
+                'settings': 'System Settings'
             };
             document.getElementById('pageTitle').innerText = titles[panel] || panel;
             
@@ -860,6 +910,51 @@ DASHBOARD_HTML = """
             if(panel === 'stolen') loadStolen();
             if(panel === 'alerts') loadAlertHistory();
             if(panel === 'transactions') loadAllTransactions();
+            if(panel === 'settings') loadSettings();
+        }
+        
+        function loadSettings() {
+            fetch('/api/stats').then(r=>r.json()).then(d=>{
+                document.getElementById('totalTransactionsCount').innerText = d.today_transactions || 0;
+                document.getElementById('totalVehiclesCount').innerText = d.vehicles || 0;
+                document.getElementById('totalStolenCount').innerText = d.stolen_alerts_today || 0;
+            });
+            fetch('/api/get_toll_amount').then(r=>r.json()).then(d=>{
+                document.getElementById('currentTollAmount').innerText = d.toll_amount;
+            });
+        }
+        
+        function resetTransactions() {
+            if(confirm('⚠️ WARNING: This will delete ALL transaction records FOREVER! Are you absolutely sure?')) {
+                if(confirm('Last chance! This cannot be undone. Confirm again?')) {
+                    fetch('/api/reset_transactions', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'}
+                    }).then(r=>r.json()).then(d=>{
+                        alert(d.message);
+                        loadAllTransactions();
+                        loadStats();
+                        loadSettings();
+                    });
+                }
+            }
+        }
+        
+        function updateTollAmount() {
+            const newAmount = document.getElementById('newTollAmount').value;
+            if(!newAmount || newAmount <= 0) {
+                alert('Please enter a valid amount');
+                return;
+            }
+            fetch('/api/update_toll_amount', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({toll_amount: parseFloat(newAmount)})
+            }).then(r=>r.json()).then(d=>{
+                alert(d.message);
+                document.getElementById('currentTollAmount').innerText = newAmount;
+                document.getElementById('newTollAmount').value = '';
+            });
         }
         
         function showTopupModal(vehicleNumber) {
@@ -909,7 +1004,7 @@ DASHBOARD_HTML = """
                 const tbody = document.getElementById('recentTransactions');
                 tbody.innerHTML = '';
                 d.slice(0, 10).forEach(t=>{
-                    const statusClass = t.status.toLowerCase().includes('stolen') ? 'status-denied' : 'status-paid';
+                    const statusClass = t.status.toLowerCase().includes('denied') ? 'status-denied' : 'status-paid';
                     tbody.innerHTML += `<tr>
                         <td>${t.vehicle_number}</td>
                         <td>$${t.amount}</td>
@@ -925,7 +1020,7 @@ DASHBOARD_HTML = """
                 const tbody = document.getElementById('allTransactions');
                 tbody.innerHTML = '';
                 d.forEach(t=>{
-                    const statusClass = t.status.toLowerCase().includes('stolen') ? 'status-denied' : 'status-paid';
+                    const statusClass = t.status.toLowerCase().includes('denied') ? 'status-denied' : 'status-paid';
                     tbody.innerHTML += `<tr>
                         <td>${t.vehicle_number}</td>
                         <td>$${t.amount}</td>
@@ -984,7 +1079,7 @@ DASHBOARD_HTML = """
                 const tbody = document.getElementById('alertsList');
                 tbody.innerHTML = '';
                 d.forEach(a=>{
-                    tbody.innerHTML += `<tr>
+                    tbody.innerHTML += `<td>
                         <td>${a.time}</td>
                         <td>${a.vehicle_number}</td>
                         <td>${a.alert_type}</td>
@@ -1162,7 +1257,7 @@ def get_stats():
     cursor.execute("SELECT COUNT(*) FROM transactions WHERE DATE(time)=CURRENT_DATE")
     today_tx = cursor.fetchone()[0]
     
-    cursor.execute("SELECT COALESCE(SUM(amount),0) FROM transactions WHERE DATE(time)=CURRENT_DATE")
+    cursor.execute("SELECT COALESCE(SUM(amount),0) FROM transactions WHERE DATE(time)=CURRENT_DATE AND status='APPROVED'")
     today_revenue = cursor.fetchone()[0]
     
     cursor.execute("SELECT COUNT(*) FROM stolen_vehicles WHERE status='ACTIVE'")
@@ -1337,15 +1432,16 @@ def handle_rfid():
     
     cursor = conn.cursor()
     
-    # Check if stolen
+    # Check if stolen - RECORD DENIED BUT NO DEDUCTION
     cursor.execute("SELECT vehicle_number FROM stolen_vehicles WHERE rfid_tag=%s AND status='ACTIVE'", (rfid_tag,))
     stolen = cursor.fetchone()
     if stolen:
         vehicle_number = stolen[0]
+        # RECORD the denied transaction but NO money deducted
         cursor.execute("""
             INSERT INTO transactions (rfid_tag, vehicle_number, amount, status, time) 
             VALUES (%s, %s, %s, %s, NOW())
-        """, (rfid_tag, vehicle_number, TOLL_AMOUNT, "DENIED-STOLEN"))
+        """, (rfid_tag, vehicle_number, TOLL_AMOUNT, "DENIED - STOLEN VEHICLE"))
         conn.commit()
         cursor.close()
         conn.close()
@@ -1366,17 +1462,23 @@ def handle_rfid():
         vehicle_number, owner, vehicle_type, balance = vehicle
         price = TOLL_AMOUNT * 2 if vehicle_type == "Truck" else TOLL_AMOUNT * 1.5 if vehicle_type == "Bus" else TOLL_AMOUNT
         
-        # ✅ CHECK BALANCE FIRST - NO TRANSACTION IF INSUFFICIENT
+        # CHECK BALANCE - RECORD DENIED BUT NO DEDUCTION
         if balance < price:
+            # RECORD denied transaction WITHOUT deducting money
+            cursor.execute("""
+                INSERT INTO transactions (rfid_tag, vehicle_number, amount, status, time) 
+                VALUES (%s, %s, %s, %s, NOW())
+            """, (rfid_tag, vehicle_number, price, f"DENIED - INSUFFICIENT BALANCE"))
+            conn.commit()
             cursor.close()
             conn.close()
-            # Return denied WITHOUT recording any transaction
+            
             return jsonify({
                 "status": "DENIED", 
                 "reason": f"Insufficient balance. Need ${price}, have ${balance}"
             })
         
-        # ✅ ONLY PROCESS IF BALANCE IS SUFFICIENT
+        # ONLY DEDUCT MONEY IF BALANCE IS SUFFICIENT
         new_balance = balance - price
         cursor.execute("UPDATE vehicles SET balance = %s WHERE rfid_tag = %s", (new_balance, rfid_tag))
         
@@ -1396,9 +1498,68 @@ def handle_rfid():
             "balance_remaining": new_balance
         })
     else:
+        # UNREGISTERED VEHICLE - NO transaction recorded
         cursor.close()
         conn.close()
         return jsonify({"status": "DENIED", "reason": "UNKNOWN VEHICLE"})
+
+@app.route("/api/reset_transactions", methods=["POST"])
+@login_required
+def reset_transactions():
+    """Reset/delete all transaction records"""
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({"message": "Database error"}), 500
+        
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM transactions")
+        cursor.execute("ALTER SEQUENCE transactions_id_seq RESTART WITH 1")
+        conn.commit()
+        
+        cursor.execute("""
+            INSERT INTO system_logs (action, username, details) 
+            VALUES (%s, %s, %s)
+        """, ("RESET_TRANSACTIONS", session['username'], "All transaction records have been deleted"))
+        conn.commit()
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({"message": "✅ All transactions have been reset successfully!"})
+        
+    except Exception as e:
+        return jsonify({"message": f"Error: {str(e)}"}), 500
+
+@app.route("/api/get_toll_amount", methods=["GET"])
+@login_required
+def get_toll_amount():
+    return jsonify({"toll_amount": TOLL_AMOUNT})
+
+@app.route("/api/update_toll_amount", methods=["POST"])
+@login_required
+def update_toll_amount():
+    global TOLL_AMOUNT
+    data = request.json
+    new_amount = float(data.get('toll_amount', 1.50))
+    
+    if new_amount <= 0:
+        return jsonify({"message": "Toll amount must be greater than 0"}), 400
+    
+    TOLL_AMOUNT = new_amount
+    
+    conn = get_db_connection()
+    if conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO system_logs (action, username, details) 
+            VALUES (%s, %s, %s)
+        """, ("UPDATE_TOLL", session['username'], f"Toll amount changed to ${new_amount}"))
+        conn.commit()
+        cursor.close()
+        conn.close()
+    
+    return jsonify({"message": f"✅ Toll amount updated to ${new_amount}"})
 
 @app.route("/api/panic_alert", methods=["POST"])
 def panic():
@@ -1433,18 +1594,15 @@ def alert_police():
         conn.close()
     return jsonify({"status": "alert_sent", "message": "Police have been alerted!"})
 
+# Expose app for Gunicorn
+app = app
+
 if __name__ == "__main__":
     print("="*60)
     print("🚗 SMART TOLL SYSTEM WITH SUPABASE 🚨")
     print("="*60)
-    print("📱 Access Dashboard: http://localhost:5000/login")
-    print("🔑 Login: admin / admin123")
     print("💰 Toll Amount: $1.50 USD")
     print("="*60)
-    print("\n✨ FEATURES:")
-    print("   • Sidebar navigation menu")
-    print("   • Add money directly from vehicles list")
-    print("   • Telegram police alerts (only)")
-    print("="*60)
     
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
