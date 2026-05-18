@@ -1342,6 +1342,7 @@ def handle_rfid():
     stolen = cursor.fetchone()
     if stolen:
         vehicle_number = stolen[0]
+        # Record denied transaction but NO money deducted
         cursor.execute("""
             INSERT INTO transactions (rfid_tag, vehicle_number, amount, status, time) 
             VALUES (%s, %s, %s, %s, NOW())
@@ -1366,17 +1367,23 @@ def handle_rfid():
         vehicle_number, owner, vehicle_type, balance = vehicle
         price = TOLL_AMOUNT * 2 if vehicle_type == "Truck" else TOLL_AMOUNT * 1.5 if vehicle_type == "Bus" else TOLL_AMOUNT
         
-        # ✅ CHECK BALANCE FIRST - NO TRANSACTION IF INSUFFICIENT
+        # CHECK BALANCE - Record denied but NO money deducted
         if balance < price:
+            # Record the denied transaction WITHOUT deducting money
+            cursor.execute("""
+                INSERT INTO transactions (rfid_tag, vehicle_number, amount, status, time) 
+                VALUES (%s, %s, %s, %s, NOW())
+            """, (rfid_tag, vehicle_number, price, f"DENIED-INSUFFICIENT BALANCE"))
+            conn.commit()
             cursor.close()
             conn.close()
-            # Return denied WITHOUT recording any transaction
+            
             return jsonify({
                 "status": "DENIED", 
                 "reason": f"Insufficient balance. Need ${price}, have ${balance}"
             })
         
-        # ✅ ONLY PROCESS IF BALANCE IS SUFFICIENT
+        # ONLY DEDUCT MONEY IF BALANCE IS SUFFICIENT
         new_balance = balance - price
         cursor.execute("UPDATE vehicles SET balance = %s WHERE rfid_tag = %s", (new_balance, rfid_tag))
         
@@ -1396,8 +1403,15 @@ def handle_rfid():
             "balance_remaining": new_balance
         })
     else:
+        # Unknown vehicle - record denied attempt but NO money deducted
+        cursor.execute("""
+            INSERT INTO transactions (rfid_tag, vehicle_number, amount, status, time) 
+            VALUES (%s, %s, %s, %s, NOW())
+        """, (rfid_tag, "UNKNOWN", TOLL_AMOUNT, "DENIED-UNREGISTERED"))
+        conn.commit()
         cursor.close()
         conn.close()
+        
         return jsonify({"status": "DENIED", "reason": "UNKNOWN VEHICLE"})
 
 @app.route("/api/panic_alert", methods=["POST"])
