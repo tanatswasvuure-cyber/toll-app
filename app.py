@@ -1,6 +1,5 @@
 from flask import Flask, request, jsonify, render_template_string, session, redirect, url_for, flash
 from functools import wraps
-from flask_cors import CORS
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from datetime import datetime
@@ -9,7 +8,6 @@ import os
 import requests
 
 app = Flask(__name__)
-CORS(app)
 app.secret_key = os.environ.get('SECRET_KEY', 'toll_system_secret_key_2025')
 
 # ================= SUPABASE (POSTGRESQL) CONFIGURATION =================
@@ -818,7 +816,7 @@ DASHBOARD_HTML = """
             <br><br>
             <div class="panel-title">Active Stolen Vehicles</div>
             <div style="overflow-x: auto;">
-                <table>
+                </table>
                     <thead>
                         <tr><th>Vehicle</th><th>RFID</th><th>Date</th><th>Action</th>
                     </thead>
@@ -831,7 +829,7 @@ DASHBOARD_HTML = """
         <div id="alertsPanel" class="content-panel">
             <div class="panel-title">🚨 Police Alert History</div>
             <div style="overflow-x: auto;">
-                <tr>
+                <table>
                     <thead>
                         <tr><th>Time</th><th>Vehicle</th><th>Alert Type</th><th>Status</th>
                     </thead>
@@ -1079,7 +1077,7 @@ DASHBOARD_HTML = """
                 const tbody = document.getElementById('alertsList');
                 tbody.innerHTML = '';
                 d.forEach(a=>{
-                    tbody.innerHTML += `<td>
+                    tbody.innerHTML += `<tr>
                         <td>${a.time}</td>
                         <td>${a.vehicle_number}</td>
                         <td>${a.alert_type}</td>
@@ -1441,7 +1439,7 @@ def handle_rfid():
         cursor.execute("""
             INSERT INTO transactions (rfid_tag, vehicle_number, amount, status, time) 
             VALUES (%s, %s, %s, %s, NOW())
-        """, (rfid_tag, vehicle_number, TOLL_AMOUNT, "DENIED - STOLEN VEHICLE"))
+        """, (rfid_tag, vehicle_number, TOLL_AMOUNT, "DENIED-STOLEN"))
         conn.commit()
         cursor.close()
         conn.close()
@@ -1468,7 +1466,7 @@ def handle_rfid():
             cursor.execute("""
                 INSERT INTO transactions (rfid_tag, vehicle_number, amount, status, time) 
                 VALUES (%s, %s, %s, %s, NOW())
-            """, (rfid_tag, vehicle_number, price, f"DENIED - INSUFFICIENT BALANCE"))
+            """, (rfid_tag, vehicle_number, price, "DENIED-INSUFFICIENT BALANCE"))
             conn.commit()
             cursor.close()
             conn.close()
@@ -1498,7 +1496,6 @@ def handle_rfid():
             "balance_remaining": new_balance
         })
     else:
-        # UNREGISTERED VEHICLE - NO transaction recorded
         cursor.close()
         conn.close()
         return jsonify({"status": "DENIED", "reason": "UNKNOWN VEHICLE"})
@@ -1592,17 +1589,21 @@ def alert_police():
         conn.commit()
         cursor.close()
         conn.close()
-    return jsonify({"status": "alert_sent", "message": "Police have been alerted!"})
-
-# Expose app for Gunicorn
-app = app
+    return jsonify({"status": "alert_sent", "message": "Police have been notified!"})
 
 if __name__ == "__main__":
     print("="*60)
     print("🚗 SMART TOLL SYSTEM WITH SUPABASE 🚨")
     print("="*60)
+    print("📱 Access Dashboard: http://localhost:5000/login")
+    print("🔑 Login: admin / admin123")
     print("💰 Toll Amount: $1.50 USD")
     print("="*60)
+    print("\n✨ FEATURES:")
+    print("   • Sidebar navigation menu")
+    print("   • Add money directly from vehicles list")
+    print("   • Telegram police alerts (only)")
+    print("   • Settings tab with transaction reset")
+    print("="*60)
     
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=5000, debug=True)
